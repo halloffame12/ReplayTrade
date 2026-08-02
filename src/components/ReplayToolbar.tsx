@@ -1,9 +1,10 @@
 import {
-  ChevronsLeft,
+  ChevronLeft,
   ChevronsRight,
   FastForward,
   Pause,
   Play,
+  Rewind,
   RotateCcw,
   SkipBack,
   SkipForward,
@@ -31,13 +32,14 @@ export function ReplayToolbar({
   onToggleAutoFollow,
   variant = 'floating',
 }: ReplayToolbarProps) {
-  const { state, togglePlay, nextCandle, previousCandle, skipForward, resetReplay, exitReplay, setSpeed, jumpToLive } =
+  const { state, togglePlay, nextCandle, previousCandle, skipBackward, skipForward, resetReplay, exitReplay, setSpeed, jumpToLive } =
     controls;
 
   const total = state.candles.length;
   const current = state.candles[state.currentReplayIndex];
   const atEnd = state.currentReplayIndex >= total - 1;
   const atStart = state.currentReplayIndex <= state.visibleStartIndex;
+  const atReplayStart = state.currentReplayIndex === (state.replayStartIndex ?? 0);
   const revealedPct = total > 0 ? ((state.currentReplayIndex + 1) / total) * 100 : 0;
   const remaining = Math.max(0, total - state.currentReplayIndex - 1);
 
@@ -71,10 +73,16 @@ export function ReplayToolbar({
         <ToolButton label="Exit replay" onClick={exitReplay} tone="danger" title="Exit replay (Esc)">
           <X size={15} />
         </ToolButton>
-        <ToolButton label="Reset replay" onClick={resetReplay} disabled={atStart}>
+        <ToolButton label="Reset replay" onClick={resetReplay} disabled={atReplayStart}>
           <RotateCcw size={15} />
         </ToolButton>
         <div className="mx-0.5 h-6 w-px bg-bg-border" aria-hidden="true" />
+        <ToolButton label="Skip 10 candles backward" onClick={() => skipBackward(10)} disabled={atStart}>
+          <Rewind size={15} />
+        </ToolButton>
+        <ToolButton label="Skip 5 candles backward" onClick={() => skipBackward(5)} disabled={atStart}>
+          <ChevronLeft size={15} />
+        </ToolButton>
         <ToolButton label="Previous candle" onClick={previousCandle} disabled={atStart}>
           <SkipBack size={15} />
         </ToolButton>
@@ -93,7 +101,7 @@ export function ReplayToolbar({
         </ToolButton>
         <div className="mx-0.5 h-6 w-px bg-bg-border" aria-hidden="true" />
         <ToolButton label="Go to latest revealed candle" onClick={jumpToLive}>
-          <ChevronsLeft size={15} />
+          <ChevronsRight size={15} />
         </ToolButton>
         <button
           onClick={onToggleAutoFollow}

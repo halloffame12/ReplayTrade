@@ -24,6 +24,8 @@ const DRAWING_COLORS = [
   '#ec4899',
 ];
 
+const colorAt = (index: number): string => DRAWING_COLORS[index % DRAWING_COLORS.length] ?? '#4f8cff';
+
 const HANDLE_HIT_RADIUS = 8;
 const LINE_HIT_TOLERANCE = 5;
 const OFFSCREEN = 1e7;
@@ -236,6 +238,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   isToolActive(): boolean {
     return this.tool !== 'select';
+  }
+
+  /** Whether a drag (moving / resizing a drawing) is currently in progress. */
+  isDragging(): boolean {
+    return this.drag !== null;
   }
 
   setTool(tool: DrawingTool): void {
@@ -500,7 +507,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (draft) {
       d = this.draftToDrawing();
       if (!d) return;
-      color = DRAWING_COLORS[this.colorIndex % DRAWING_COLORS.length];
+      color = colorAt(this.colorIndex);
     } else {
       d = this.drawings.find((g) => g.id === this.selectedId);
       if (!d) return;
@@ -541,7 +548,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   private draftToDrawing(): Drawing | null {
     if (!this.draft) return null;
-    const color = DRAWING_COLORS[this.colorIndex % DRAWING_COLORS.length];
+    const color = colorAt(this.colorIndex);
     if (this.tool === 'vertLine') {
       return { id: '', type: 'vertLine', color, time: this.draft.p1.time };
     }
@@ -559,7 +566,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   private renderDraftTag(ctx: CanvasRenderingContext2D, w: number): void {
     if (!this.draft) return;
-    const color = DRAWING_COLORS[this.colorIndex % DRAWING_COLORS.length];
+    const color = colorAt(this.colorIndex);
     if (this.tool === 'horzLine') {
       const y = this.priceToY(this.draft.p1.price);
       if (y === null) return;
@@ -731,7 +738,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   }
 
   private nextColor(): string {
-    const color = DRAWING_COLORS[this.colorIndex % DRAWING_COLORS.length];
+    const color = colorAt(this.colorIndex);
     this.colorIndex += 1;
     return color;
   }
@@ -739,6 +746,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private findHit(x: number, y: number): HitResult | null {
     for (let i = this.drawings.length - 1; i >= 0; i--) {
       const d = this.drawings[i];
+      if (!d) continue;
       if (d.type === 'horzLine') {
         const py = this.priceToY(d.price);
         if (py === null) continue;
@@ -781,7 +789,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (coord !== null) return coord;
     const n = this.times.length;
     if (n === 0) return null;
-    return time > this.times[n - 1] ? OFFSCREEN : -OFFSCREEN;
+    const last = this.times[n - 1];
+    if (last === undefined) return null;
+    return time > last ? OFFSCREEN : -OFFSCREEN;
   }
 
   private xToTime(x: number): number | null {
@@ -808,18 +818,22 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (n === 0) return null;
     const first = this.times[0];
     const last = this.times[n - 1];
+    if (first === undefined || last === undefined) return null;
     if (time <= first) return this.tf > 0 ? (time - first) / this.tf : null;
     if (time >= last) return this.tf > 0 ? n - 1 + (time - last) / this.tf : null;
     let lo = 0;
     let hi = n - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (this.times[mid] < time) lo = mid + 1;
+      const t = this.times[mid];
+      if (t === undefined) break;
+      if (t < time) lo = mid + 1;
       else hi = mid;
     }
     const right = this.times[lo];
-    if (right === time) return lo;
     const left = this.times[Math.max(0, lo - 1)];
+    if (left === undefined || right === undefined) return lo;
+    if (right === time) return lo;
     const span = right - left;
     if (span <= 0) return lo;
     return lo - 1 + (time - left) / span;
@@ -828,29 +842,43 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private logicalToTime(L: number): number | null {
     const n = this.times.length;
     if (n === 0) return null;
-    if (L < 0) return this.tf > 0 ? this.times[0] + L * this.tf : null;
+    const first = this.times[0];
+    if (first === undefined) return null;
+    if (L < 0) return this.tf > 0 ? first + L * this.tf : null;
     if (L >= n - 1) {
-      if (this.tf > 0) return this.times[n - 1] + (L - (n - 1)) * this.tf;
-      return this.times[n - 1];
+      const last = this.times[n - 1];
+      if (last === undefined) return null;
+      if (this.tf > 0) return last + (L - (n - 1)) * this.tf;
+      return last;
     }
     const lo = Math.floor(L);
     const frac = L - lo;
-    return this.times[lo] + (this.times[lo + 1] - this.times[lo]) * frac;
+    const t0 = this.times[lo];
+    const t1 = this.times[lo + 1];
+    if (t0 === undefined || t1 === undefined) return null;
+    return t0 + (t1 - t0) * frac;
   }
 
   private nearestCandleIndex(time: number): number {
     const n = this.candles.length;
     if (n === 0) return -1;
-    if (time <= this.candles[0].time) return 0;
-    if (time >= this.candles[n - 1].time) return n - 1;
+    const first = this.candles[0];
+    const last = this.candles[n - 1];
+    if (!first || !last) return -1;
+    if (time <= first.time) return 0;
+    if (time >= last.time) return n - 1;
     let lo = 0;
     let hi = n - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (this.candles[mid].time <= time) lo = mid;
+      const c = this.candles[mid];
+      if (!c) break;
+      if (c.time <= time) lo = mid;
       else hi = mid - 1;
     }
-    if (lo + 1 < n && Math.abs(this.candles[lo + 1].time - time) < Math.abs(this.candles[lo].time - time)) {
+    const c0 = this.candles[lo];
+    const c1 = this.candles[lo + 1];
+    if (c0 && c1 && Math.abs(c1.time - time) < Math.abs(c0.time - time)) {
       return lo + 1;
     }
     return lo;
@@ -861,6 +889,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const i = this.nearestCandleIndex(time);
     if (i < 0) return price;
     const c = this.candles[i];
+    if (!c) return price;
     const y = this.priceToY(price);
     const yHigh = this.priceToY(c.high);
     const yLow = this.priceToY(c.low);
@@ -907,7 +936,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       handleScale: {
         mouseWheel: true,
         pinch: true,
-        axisPressedMouseMove: false,
+        // TradingView parity: dragging on the price axis zooms vertically.
+        axisPressedMouseMove: true,
       },
     });
   }
@@ -954,3 +984,4 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     }
   }
 }
+

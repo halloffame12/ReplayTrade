@@ -47,11 +47,13 @@ export function advanceReplay(state: ReplayState): ReplayState {
   if (state.candles.length === 0) return state;
   if (state.currentReplayIndex >= state.candles.length - 1) return reachEnd(state);
   const next = state.currentReplayIndex + 1;
+  const finished = next >= state.candles.length - 1;
   return {
     ...state,
     currentReplayIndex: next,
     maxRevealedIndex: Math.max(state.maxRevealedIndex, next),
-    mode: next >= state.candles.length - 1 ? 'completed' : state.mode,
+    mode: finished ? 'completed' : state.mode,
+    isPlaying: finished ? false : state.isPlaying,
   };
 }
 
@@ -61,12 +63,23 @@ export function stepBackReplay(state: ReplayState): ReplayState {
   return { ...state, currentReplayIndex: state.currentReplayIndex - 1 };
 }
 
+/** Skip backward `count` candles (clamped to the visible history window). */
+export function skipBackwardReplay(state: ReplayState, count: number): ReplayState {
+  const target = Math.max(state.visibleStartIndex, state.currentReplayIndex - count);
+  if (target === state.currentReplayIndex) return state;
+  return { ...state, currentReplayIndex: target };
+}
+
 /** Skip forward `count` candles (clamped to the final candle). */
 export function skipForwardReplay(state: ReplayState, count: number): ReplayState {
   const target = Math.min(state.candles.length - 1, state.currentReplayIndex + count);
+  const finished = target >= state.candles.length - 1;
   const next = { ...state, currentReplayIndex: target };
   next.maxRevealedIndex = Math.max(state.maxRevealedIndex, target);
-  if (target >= state.candles.length - 1) next.mode = 'completed';
+  if (finished) {
+    next.mode = 'completed';
+    next.isPlaying = false;
+  }
   return next;
 }
 

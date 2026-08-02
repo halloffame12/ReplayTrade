@@ -1,7 +1,8 @@
-import { CandlestickChart, Play, X } from 'lucide-react';
+import { Camera, CandlestickChart, CircleHelp, Expand, Maximize2, Minimize2, PanelsTopLeft, Play, X } from 'lucide-react';
 import type { DataSource, DataSourceOption, Timeframe } from '../types/market';
 import { SYMBOLS, TIME_FRAMES } from '../types/market';
 import { formatCurrency, formatPct } from '../utils/tradingCalculations';
+import { Tooltip } from './ui';
 
 interface HeaderProps {
   symbol: string;
@@ -9,6 +10,7 @@ interface HeaderProps {
   onSymbolChange: (s: string) => void;
   onTimeframeChange: (t: Timeframe) => void;
   balance: number;
+  startingBalance: number;
   totalPnl: number;
   currentPrice: number;
   decimals: number;
@@ -20,6 +22,12 @@ interface HeaderProps {
   sourceOption: DataSourceOption;
   availableSources: DataSourceOption[];
   onSourceChange: (s: DataSourceOption) => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  chartExpanded: boolean;
+  onToggleChartExpanded: () => void;
+  onShowHelp: () => void;
+  onTakeScreenshot: () => void;
 }
 
 export function Header({
@@ -28,6 +36,7 @@ export function Header({
   onSymbolChange,
   onTimeframeChange,
   balance,
+  startingBalance,
   totalPnl,
   currentPrice,
   decimals,
@@ -39,6 +48,12 @@ export function Header({
   sourceOption,
   availableSources,
   onSourceChange,
+  fullscreen,
+  onToggleFullscreen,
+  chartExpanded,
+  onToggleChartExpanded,
+  onShowHelp,
+  onTakeScreenshot,
 }: HeaderProps) {
   const pnlPositive = totalPnl >= 0;
 
@@ -141,7 +156,51 @@ export function Header({
           {replayActive ? 'Exit Replay' : 'Start Replay'}
         </button>
 
-        {currentPrice > 0 && (
+        <Tooltip content={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}>
+          <button
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            className="flex h-8 w-8 items-center justify-center rounded-sm border border-bg-border bg-bg-elevated text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+          >
+            {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+        </Tooltip>
+
+        <Tooltip content={chartExpanded ? 'Exit chart focus (Esc)' : 'Focus chart (hide side panel)'}>
+          <button
+            onClick={onToggleChartExpanded}
+            aria-label={chartExpanded ? 'Exit chart focus' : 'Focus chart'}
+            className={`flex h-8 w-8 items-center justify-center rounded-sm border transition-colors hover:border-accent hover:text-text-primary ${
+              chartExpanded
+                ? 'border-accent bg-accent-dim text-accent'
+                : 'border-bg-border bg-bg-elevated text-text-secondary'
+            }`}
+          >
+            {chartExpanded ? <PanelsTopLeft size={14} /> : <Expand size={14} />}
+          </button>
+        </Tooltip>
+
+        <Tooltip content="Shortcuts (Alt+H)">
+          <button
+            onClick={onShowHelp}
+            aria-label="Keyboard shortcuts"
+            className="flex h-8 w-8 items-center justify-center rounded-sm border border-bg-border bg-bg-elevated text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+          >
+            <CircleHelp size={14} />
+          </button>
+        </Tooltip>
+
+        <Tooltip content="Save chart image (PNG)">
+          <button
+            onClick={onTakeScreenshot}
+            aria-label="Save chart image"
+            className="flex h-8 w-8 items-center justify-center rounded-sm border border-bg-border bg-bg-elevated text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+          >
+            <Camera size={14} />
+          </button>
+        </Tooltip>
+
+        {replayActive && currentPrice > 0 && (
           <div className="hidden text-right font-mono leading-tight md:block">
             <div className="text-[9px] uppercase tracking-wider text-text-muted">{symbol}</div>
             <div className="text-[13px] font-bold text-text-primary">
@@ -163,7 +222,7 @@ export function Header({
           <div className={`text-[13px] font-bold ${pnlPositive ? 'text-up' : 'text-down'}`}>
             {formatCurrency(totalPnl)}{' '}
             <span className="text-[10px]">
-              ({balance > 0 ? formatPct((totalPnl / balance) * 100) : '0.00%'})
+              ({startingBalance > 0 ? formatPct((totalPnl / startingBalance) * 100) : '0.00%'})
             </span>
           </div>
         </div>

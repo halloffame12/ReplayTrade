@@ -5,8 +5,13 @@ export function sma(candles: Candle[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(candles.length).fill(null);
   let sum = 0;
   for (let i = 0; i < candles.length; i++) {
-    sum += candles[i].close;
-    if (i >= period) sum -= candles[i - period].close;
+    const c = candles[i];
+    if (!c) break;
+    sum += c.close;
+    if (i >= period) {
+      const oldest = candles[i - period];
+      if (oldest) sum -= oldest.close;
+    }
     if (i >= period - 1) out[i] = sum / period;
   }
   return out;
@@ -18,10 +23,12 @@ export function ema(candles: Candle[], period: number): (number | null)[] {
   const k = 2 / (period + 1);
   let prev: number | null = null;
   for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    if (!c) break;
     if (prev === null) {
-      prev = candles[i].close;
+      prev = c.close;
     } else {
-      prev = candles[i].close * k + prev * (1 - k);
+      prev = c.close * k + prev * (1 - k);
     }
     if (i >= period - 1) out[i] = prev;
   }
@@ -33,7 +40,10 @@ export function rollingHigh(candles: Candle[], period: number): (number | null)[
   const out: (number | null)[] = new Array(candles.length).fill(null);
   for (let i = period - 1; i < candles.length; i++) {
     let h = -Infinity;
-    for (let j = i - period + 1; j <= i; j++) h = Math.max(h, candles[j].high);
+    for (let j = i - period + 1; j <= i; j++) {
+      const c = candles[j];
+      if (c) h = Math.max(h, c.high);
+    }
     out[i] = h;
   }
   return out;
@@ -44,7 +54,10 @@ export function rollingLow(candles: Candle[], period: number): (number | null)[]
   const out: (number | null)[] = new Array(candles.length).fill(null);
   for (let i = period - 1; i < candles.length; i++) {
     let l = Infinity;
-    for (let j = i - period + 1; j <= i; j++) l = Math.min(l, candles[j].low);
+    for (let j = i - period + 1; j <= i; j++) {
+      const c = candles[j];
+      if (c) l = Math.min(l, c.low);
+    }
     out[i] = l;
   }
   return out;

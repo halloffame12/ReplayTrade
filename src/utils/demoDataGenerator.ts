@@ -163,7 +163,8 @@ export function generateDemoData(
       close: round(close),
       volume: Math.round(volume),
     });
-    price = candles[candles.length - 1].close;
+    const last = candles[candles.length - 1];
+    price = last ? last.close : price;
   }
 
   return { candles, seed: effectiveSeed };

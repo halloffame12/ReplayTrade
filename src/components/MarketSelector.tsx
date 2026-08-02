@@ -5,6 +5,7 @@ import type { LoadProgress } from '../services/marketDataService';
 import type { DataRange } from '../hooks/useMarketData';
 import { sixMonthRange } from '../hooks/useMarketData';
 import { formatShortDate } from '../utils/candleUtils';
+import { Skeleton } from './ui';
 
 interface MarketSelectorProps {
   symbol: string;
@@ -52,61 +53,78 @@ export function MarketSelector({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2">
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="ms-symbol" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-            Market
-          </label>
-          <select
-            id="ms-symbol"
-            value={symbol}
-            onChange={(e) => onSymbolChange(e.target.value)}
-            disabled={loading || replayActive}
-            className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {SYMBOLS.map((s) => (
-              <option key={s.symbol} value={s.symbol}>
-                {s.symbol} — {s.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="ms-tf" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-            Timeframe
-          </label>
-          <select
-            id="ms-tf"
-            value={timeframe}
-            onChange={(e) => onTimeframeChange(e.target.value as Timeframe)}
-            disabled={loading || replayActive}
-            className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {TIME_FRAMES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </div>
-        {availableSources.length > 1 && (
+        {loading && !progress ? (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="ms-source" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Data source
-            </label>
-            <select
-              id="ms-source"
-              value={sourceOption}
-              onChange={(e) => onSourceChange(e.target.value as DataSourceOption)}
-              disabled={loading || replayActive}
-              className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {availableSources.map((s) => (
-                <option key={s} value={s}>
-                  {s === 'oanda' ? 'OANDA — Gold spot (XAU_USD)' : 'Binance — Gold token (PAXGUSDT)'}
-                </option>
-              ))}
-            </select>
+            <Skeleton height={10} width={80} />
+            <Skeleton height={36} />
+            <Skeleton height={10} width={80} />
+            <Skeleton height={36} />
+            {availableSources.length > 1 && (
+              <>
+                <Skeleton height={10} width={80} />
+                <Skeleton height={36} />
+              </>
+            )}
           </div>
+        ) : (
+          <>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="ms-symbol" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Market
+              </label>
+              <select
+                id="ms-symbol"
+                value={symbol}
+                onChange={(e) => onSymbolChange(e.target.value)}
+                disabled={loading || replayActive}
+                className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {SYMBOLS.map((s) => (
+                  <option key={s.symbol} value={s.symbol}>
+                    {s.symbol} — {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="ms-tf" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Timeframe
+              </label>
+              <select
+                id="ms-tf"
+                value={timeframe}
+                onChange={(e) => onTimeframeChange(e.target.value as Timeframe)}
+                disabled={loading || replayActive}
+                className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {TIME_FRAMES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {availableSources.length > 1 && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="ms-source" className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  Data source
+                </label>
+                <select
+                  id="ms-source"
+                  value={sourceOption}
+                  onChange={(e) => onSourceChange(e.target.value as DataSourceOption)}
+                  disabled={loading || replayActive}
+                  className="h-9 cursor-pointer rounded-sm border border-bg-border bg-bg-elevated px-2 font-mono text-[12px] font-semibold text-text-primary outline-none transition-colors hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {availableSources.map((s) => (
+                    <option key={s} value={s}>
+                      {s === 'oanda' ? 'OANDA — Gold spot (XAU_USD)' : 'Binance — Gold token (PAXGUSDT)'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
         )}
       </div>
 

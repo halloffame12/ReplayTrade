@@ -113,9 +113,17 @@ export function useMarketData(): UseMarketDataResult {
           setSource(null);
           return;
         }
+        const first = result[0];
+        const last = result[result.length - 1];
+        if (!first || !last) {
+          setError('The market data service returned no candles for this range.');
+          setCandles([]);
+          setSource(null);
+          return;
+        }
         setCandles(result);
         setSource(source);
-        setRange({ from: result[0].time, to: result[result.length - 1].time });
+        setRange({ from: first.time, to: last.time });
         setProgress({ loadedBatches: lastBatches, totalBatches: lastBatches, pct: 100 });
       } catch (err) {
         if (controller.signal.aborted) return;

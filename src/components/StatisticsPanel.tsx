@@ -96,6 +96,15 @@ export function EquityChart({ series }: { series: number[] }) {
       </div>
     );
   }
+  const first = series[0];
+  const last = series[series.length - 1];
+  if (first === undefined || last === undefined) {
+    return (
+      <div className="flex h-24 items-center justify-center font-mono text-[10px] text-text-muted">
+        Not enough data
+      </div>
+    );
+  }
   const width = 100;
   const height = 40;
   const min = Math.min(...series);
@@ -111,8 +120,8 @@ export function EquityChart({ series }: { series: number[] }) {
     })
     .join(' ');
 
-  const lastY = height - pad - ((series[series.length - 1] - min) / span) * (height - pad * 2);
-  const positive = series[series.length - 1] >= series[0];
+  const lastY = height - pad - ((last - min) / span) * (height - pad * 2);
+  const positive = last >= first;
   const color = positive ? '#22c55e' : '#ef4444';
 
   return (

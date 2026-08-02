@@ -6,6 +6,7 @@ import {
   LineSeries,
   LineStyle,
   LineWidth,
+  TickMarkType,
   createChart,
   createSeriesMarkers,
 } from 'lightweight-charts';
@@ -14,9 +15,11 @@ import type {
   HistogramData,
   IChartApi,
   IPriceLine,
+  IPriceScaleApi,
   ISeriesApi,
   ISeriesMarkersPluginApi,
   LineData,
+  LogicalRange,
   MouseEventHandler,
   SeriesMarker,
   Time,
@@ -24,13 +27,15 @@ import type {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Candle, Timeframe } from '../types/market';
 import { TIME_FRAME_MS } from '../types/market';
-import type { Position } from '../types/trading';
+import type { ClosedTrade, Position } from '../types/trading';
 import type { DrawingTool } from '../types/drawings';
 import { DrawingManager } from '../utils/drawingManager';
 import { ema, sma } from '../utils/indicators';
 import { nearestIndexByTime, formatCandleDate } from '../utils/candleUtils';
 import { formatPrice, formatVolume } from '../utils/tradingCalculations';
 import { DrawingToolbar } from './DrawingToolbar';
+import { Tooltip } from './ui';
+import { ArrowRightToLine, ScanSearch } from 'lucide-react';
 
 interface TradingChartProps {
   candles: Candle[];
@@ -39,6 +44,7 @@ interface TradingChartProps {
   decimals: number;
   currentPrice: number;
   positions: Position[];
+  closedTrades?: ClosedTrade[];
   replayActive: boolean;
   visibleStartIndex: number;
   currentReplayIndex: number;
@@ -50,6 +56,8 @@ interface TradingChartProps {
   autoFollow: boolean;
   followSignal: number;
   showIndicators?: boolean;
+  showVolume?: boolean;
+  onChartReady?: (chart: IChartApi | null) => void;
 }
 
 const COLORS = {
@@ -68,6 +76,53 @@ function toChartTime(time: number): Time {
   return time as Time;
 }
 
+/**
+ * Manually fit a price scale so that `slice` fills its visible range (with a
+ * small pad for wicks). Used instead of the library autoscale, because
+ * `autoScale: true` disables TradingView-style vertical drag-panning.
+ */
+function fitPriceScaleToCandles(ps: IPriceScaleApi, slice: Candle[]): void {
+  if (slice.length === 0) return;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const c of slice) {
+    if (c.low < min) min = c.low;
+    if (c.high > max) max = c.high;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+  let span = max - min;
+  if (span <= 0) span = 1;
+  const pad = span * 0.02;
+  ps.setVisibleRange({ from: min - pad, to: max + pad });
+}
+
+/** TradingView-style tick-mark labels (e.g. `14:35`, `Aug`, `'26`). */
+function tickMarkFormatter(time: Time, tickMarkType: TickMarkType): string {
+  const ts =
+    typeof time === 'number'
+      ? time
+      : (time as { timestamp?: number; year?: number; month?: number; day?: number }).timestamp ??
+        ((time as { year?: number; month?: number; day?: number }).year ?? 0);
+  const d = new Date(ts * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  switch (tickMarkType) {
+    case TickMarkType.Year:
+      return `'${String(d.getFullYear()).slice(2)}`;
+    case TickMarkType.Month:
+      return d.toLocaleDateString('en-US', { month: 'short' });
+    case TickMarkType.DayOfMonth:
+      return String(d.getDate());
+    case TickMarkType.Time:
+      return `${hh}:${mm}`;
+    case TickMarkType.TimeWithSeconds:
+      return `${hh}:${mm}:${ss}`;
+    default:
+      return '';
+  }
+}
+
 export function TradingChart({
   candles,
   timeframe,
@@ -75,6 +130,7 @@ export function TradingChart({
   decimals,
   currentPrice,
   positions,
+  closedTrades,
   replayActive,
   visibleStartIndex,
   currentReplayIndex,
@@ -86,6 +142,8 @@ export function TradingChart({
   autoFollow,
   followSignal,
   showIndicators = true,
+  showVolume = true,
+  onChartReady,
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -97,10 +155,21 @@ export function TradingChart({
   const priceLineRefs = useRef<Map<string, IPriceLine[]>>(new Map());
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const lastCountRef = useRef<number>(0);
+  const lastDataKeyRef = useRef<string>('');
+  const lastWindowStartRef = useRef<number | null>(null);
+  const visibleLenRef = useRef(0);
+  const atRightEdgeRef = useRef(true);
+  // TradingView-style price-scale ownership: once the user drags/zooms the
+  // price scale, the replay auto-refit backs off until the dataset changes or
+  // the view window is recentered (so vertical panning is never yanked back).
+  const priceScaleManualRef = useRef(false);
+  const [priceScaleManual, setPriceScaleManual] = useState(false);
+  const panStartRef = useRef<[number, number] | null>(null);
 
   const [hover, setHover] = useState<Candle | null>(null);
   const [tool, setTool] = useState<DrawingTool>('select');
   const [, setDrawTick] = useState(0);
+  const [awayFromEdge, setAwayFromEdge] = useState(false);
   const drawingManagerRef = useRef<DrawingManager | null>(null);
   const drawingActiveRef = useRef(false);
   drawingActiveRef.current = tool !== 'select';
@@ -124,6 +193,8 @@ export function TradingChart({
     return start <= end ? candles.slice(start, end + 1) : [];
   }, [candles, replayActive, visibleStartIndex, currentReplayIndex]);
 
+  visibleLenRef.current = visible.length;
+
   // Create the chart exactly once.
   useEffect(() => {
     const container = containerRef.current;
@@ -145,15 +216,34 @@ export function TradingChart({
       },
       rightPriceScale: {
         borderColor: '#232c3f',
+        borderVisible: true,
+        // autoScale must stay OFF: with it on, lightweight-charts snaps the
+        // price scale back on mouse drag, so vertical panning never works.
+        // We refit the range manually at the right moments instead.
+        autoScale: false,
         scaleMargins: { top: 0.08, bottom: 0.25 },
       },
       timeScale: {
         borderColor: '#232c3f',
+        borderVisible: true,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 4,
         barSpacing: 6,
-        minBarSpacing: 0.5,
+        minBarSpacing: 1,
+        tickMarkFormatter,
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        // TradingView parity: dragging on the price axis zooms vertically.
+        axisPressedMouseMove: true,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -175,6 +265,7 @@ export function TradingChart({
       },
     });
     chartRef.current = chart;
+    onChartReady?.(chart);
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: COLORS.up,
@@ -294,6 +385,7 @@ export function TradingChart({
       priceLineRefs.current.clear();
       chart.remove();
       chartRef.current = null;
+      onChartReady?.(null);
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       smaSeriesRef.current = null;
@@ -305,18 +397,59 @@ export function TradingChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Track whether the user has scrolled away from the right edge, so auto-follow
+  // pauses while they study history (TradingView behaviour) and resumes at the edge.
+  useEffect(() => {
+    const ts = chartRef.current?.timeScale();
+    if (!ts) return;
+    const onRange = (range: LogicalRange | null) => {
+      if (!range) return;
+      atRightEdgeRef.current = range.to >= visibleLenRef.current + 2;
+      setAwayFromEdge(!atRightEdgeRef.current);
+    };
+    ts.subscribeVisibleLogicalRangeChange(onRange);
+    return () => ts.unsubscribeVisibleLogicalRangeChange(onRange);
+  }, []);
+
+  // Keep price precision (axis + price lines) in sync when the symbol changes.
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      localization: { priceFormatter: (p: number) => formatPrice(p, decimals) },
+    });
+    candleSeriesRef.current?.applyOptions({
+      priceFormat: { type: 'price', precision: decimals, minMove: 1 / 10 ** decimals },
+    });
+  }, [decimals]);
+
+  // Volume pane visibility toggle (TradingView parity).
+  useEffect(() => {
+    volumeSeriesRef.current?.applyOptions({ visible: showVolume });
+  }, [showVolume]);
+
   // Data sync: only the visible (revealed) slice ever reaches the series.
   useEffect(() => {
     if (!chartRef.current || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
     const prevCount = lastCountRef.current;
     lastCountRef.current = visible.length;
+    const dataKey = `${symbol}|${timeframe}|${candles.length}|${candles[candles.length - 1]?.time ?? ''}`;
+    const dataChanged = lastDataKeyRef.current !== dataKey;
+    lastDataKeyRef.current = dataKey;
     const c = candleSeriesRef.current;
     const v = volumeSeriesRef.current;
     const isAppend = prevCount > 0 && visible.length === prevCount + 1;
+    // A "window jump": the visible slice's left edge moved (replay start, reset,
+    // or a new start point). This must recenter + refit the price scale,
+    // otherwise the price scale stays fitted to the old (full) window and the
+    // graph appears squished off to the side.
+    const windowStart = replayActive ? visibleStartIndex : 0;
+    const windowJumped =
+      lastWindowStartRef.current !== null && windowStart !== lastWindowStartRef.current;
+    lastWindowStartRef.current = windowStart;
 
     if (isAppend && visible.length > 0) {
       const last = visible[visible.length - 1];
+      if (!last) return;
       c.update({
         time: toChartTime(last.time),
         open: last.open,
@@ -329,6 +462,17 @@ export function TradingChart({
         value: last.volume,
         color: last.close >= last.open ? COLORS.volumeUp : COLORS.volumeDown,
       } as HistogramData);
+      // Replay autoscale: when the newly revealed candle breaks out of the
+      // current price range, refit so it stays in view (like TradingView).
+      // Backs off once the user has manually panned/zoomed the price scale.
+      const ps = c.priceScale();
+      const cur = ps.getVisibleRange();
+      if (cur && !priceScaleManualRef.current && (last.high > cur.to || last.low < cur.from)) {
+        const lr = chartRef.current.timeScale().getVisibleLogicalRange();
+        if (lr) {
+          fitPriceScaleToCandles(ps, visible.slice(Math.max(0, Math.floor(lr.from))));
+        }
+      }
     } else if (visible.length > 0) {
       c.setData(
         visible.map((k) => ({
@@ -346,11 +490,42 @@ export function TradingChart({
           color: k.close >= k.open ? COLORS.volumeUp : COLORS.volumeDown,
         })) as HistogramData[],
       );
-      if (prevCount === 0 || visible.length < prevCount) {
-        chartRef.current.timeScale().setVisibleLogicalRange({
-          from: Math.max(0, visible.length - 160),
-          to: visible.length + 4,
-        });
+      if (dataChanged) {
+        // New dataset / timeframe / symbol: land on the latest bars like TradingView.
+        // Fresh data re-engages price auto-fit (TradingView resets the scale).
+        priceScaleManualRef.current = false;
+        setPriceScaleManual(false);
+        const rangeFrom = Math.max(0, visible.length - 160);
+        chartRef.current.timeScale().setVisibleLogicalRange({ from: rangeFrom, to: visible.length + 4 });
+        fitPriceScaleToCandles(c.priceScale(), visible.slice(rangeFrom));
+        atRightEdgeRef.current = true;
+      } else if (windowJumped) {
+        // Replay just started / reset / start point changed: the visible window
+        // moved to a different region of history, so land on the start candle
+        // and refit the price scale to this window (TradingView parity). This
+        // is what keeps the graph centered instead of squished to one side.
+        priceScaleManualRef.current = false;
+        setPriceScaleManual(false);
+        const rangeFrom = Math.max(0, visible.length - 160);
+        chartRef.current.timeScale().setVisibleLogicalRange({ from: rangeFrom, to: visible.length + 4 });
+        fitPriceScaleToCandles(c.priceScale(), visible.slice(rangeFrom));
+        atRightEdgeRef.current = true;
+      } else {
+        // Replay window moved: preserve the user's view, only clamp if it fell out of range.
+        const r = chartRef.current.timeScale().getVisibleLogicalRange();
+        if (r && (r.to > visible.length + 8 || r.from < 0)) {
+          const rangeFrom = Math.max(0, visible.length - 160);
+          chartRef.current.timeScale().setVisibleLogicalRange({
+            from: rangeFrom,
+            to: visible.length + 4,
+          });
+          // Recentering the window also re-engages price auto-fit so the new
+          // window is shown coherently (covers replay reset / large skips).
+          priceScaleManualRef.current = false;
+          setPriceScaleManual(false);
+          fitPriceScaleToCandles(c.priceScale(), visible.slice(rangeFrom));
+          atRightEdgeRef.current = true;
+        }
       }
     } else {
       c.setData([]);
@@ -362,22 +537,31 @@ export function TradingChart({
     const emaSeries = emaSeriesRef.current;
     if (smaSeries && emaSeries) {
       if (showIndicators && visible.length > 20) {
-        const s = sma(visible, 20);
-        const e = ema(visible, 50);
         if (isAppend) {
-          const sl = s[s.length - 1];
-          const el = e[e.length - 1];
-          if (sl !== null) smaSeries.update({ time: toChartTime(visible[visible.length - 1].time), value: sl });
-          if (el !== null) emaSeries.update({ time: toChartTime(visible[visible.length - 1].time), value: el });
+          // Replay tick: only the newest bar is added, so just compute the
+          // latest SMA/EMA over a bounded tail instead of the whole slice
+          // (SMA20 is exact over its 20-bar window; EMA50 is indistinguishable
+          // from the full-series value after a 200-bar warm-up).
+          const lastVisible = visible[visible.length - 1];
+          if (!lastVisible) return;
+          const tail = visible.slice(-200);
+          const tS = sma(tail, 20);
+          const tE = ema(tail, 50);
+          const sl = tS[tS.length - 1];
+          const el = tE[tE.length - 1];
+          if (sl !== null) smaSeries.update({ time: toChartTime(lastVisible.time), value: sl });
+          if (el !== null) emaSeries.update({ time: toChartTime(lastVisible.time), value: el });
         } else {
+          const s = sma(visible, 20);
+          const e = ema(visible, 50);
           smaSeries.setData(
             s
-              .map((val, i) => (val === null ? null : { time: toChartTime(visible[i].time), value: val }))
+              .map((val, i) => (val === null || !visible[i] ? null : { time: toChartTime(visible[i].time), value: val }))
               .filter(Boolean) as LineData[],
           );
           emaSeries.setData(
             e
-              .map((val, i) => (val === null ? null : { time: toChartTime(visible[i].time), value: val }))
+              .map((val, i) => (val === null || !visible[i] ? null : { time: toChartTime(visible[i].time), value: val }))
               .filter(Boolean) as LineData[],
           );
         }
@@ -429,18 +613,44 @@ export function TradingChart({
     };
     const onDown = (e: PointerEvent): void => {
       if (e.button !== 0) return;
-      if (!container.hasPointerCapture(e.pointerId)) {
-        container.setPointerCapture(e.pointerId);
-      }
       const [x, y] = getPos(e);
+      panStartRef.current = [x, y];
       dm.onPointerDown(x, y);
+      // Only capture the pointer once a drawing interaction actually starts
+      // (drawing tool active, or dragging an existing drawing). Capturing on
+      // every pointerdown would swallow lightweight-charts' own pan/zoom drag
+      // events and break scrolling the chart.
+      if (drawingActiveRef.current || dm.isDragging()) {
+        if (!container.hasPointerCapture(e.pointerId)) {
+          container.setPointerCapture(e.pointerId);
+        }
+      }
     };
     const onMove = (e: PointerEvent): void => {
       const [x, y] = getPos(e);
+      const start = panStartRef.current;
+      if (start) {
+        const dx = x - start[0];
+        const dy = y - start[1];
+        // A drag with a real vertical component while the select tool is
+        // active (and not dragging a drawing) is a price-scale pan/zoom.
+        // Treat it as a manual override so replay stops auto-refitting it.
+        if (Math.abs(dy) > 4 && !drawingActiveRef.current && !dm.isDragging()) {
+          priceScaleManualRef.current = true;
+          setPriceScaleManual(true);
+        }
+        if (dx * dx + dy * dy > 12) panStartRef.current = null;
+      }
       dm.onPointerMove(x, y);
     };
-    const onUp = (): void => dm.onPointerUp();
-    const onCancel = (): void => dm.onPointerCancel();
+    const onUp = (): void => {
+      panStartRef.current = null;
+      dm.onPointerUp();
+    };
+    const onCancel = (): void => {
+      panStartRef.current = null;
+      dm.onPointerCancel();
+    };
 
     container.addEventListener('pointerdown', onDown);
     container.addEventListener('pointermove', onMove);
@@ -460,6 +670,15 @@ export function TradingChart({
     drawingManagerRef.current?.setTool(next);
   };
 
+  // When entering replay-start selection, force the select tool back on — an
+  // active drawing tool would otherwise swallow chart clicks and make candle
+  // selection silently impossible.
+  useEffect(() => {
+    if (!isSelecting) return;
+    setTool('select');
+    drawingManagerRef.current?.setTool('select');
+  }, [isSelecting]);
+
   // While a drawing tool is active, take over touch gestures so drags draw
   // instead of scrolling/panning the page.
   useEffect(() => {
@@ -468,37 +687,70 @@ export function TradingChart({
     container.style.touchAction = tool !== 'select' ? 'none' : 'auto';
   }, [tool]);
 
-  // Auto-follow: keep the newest revealed candle at the right edge.
+  // Auto-follow: keep the newest revealed candle centered (TradingView-style
+  // playback). Uses the current visible span so zoom level is preserved, and
+  // only refits toward the newest candle as the replay advances.
   useEffect(() => {
     const ts = chartRef.current?.timeScale();
     if (!ts) return;
-    ts.scrollToPosition(0, false);
+    const r = ts.getVisibleLogicalRange();
+    const span = r && r.to > r.from ? r.to - r.from : 160;
+    const last = Math.max(0, visible.length - 1);
+    ts.setVisibleLogicalRange({
+      from: Math.max(0, last - span / 2),
+      to: last + span / 2,
+    });
+    atRightEdgeRef.current = true;
   }, [followSignal]);
 
   useEffect(() => {
     if (!autoFollowRef.current || !isPlayingRef.current) return;
+    if (!atRightEdgeRef.current) return;
     const ts = chartRef.current?.timeScale();
     if (!ts) return;
-    ts.scrollToPosition(0, false);
+    const r = ts.getVisibleLogicalRange();
+    const span = r && r.to > r.from ? r.to - r.from : 160;
+    const last = Math.max(0, visible.length - 1);
+    ts.setVisibleLogicalRange({
+      from: Math.max(0, last - span / 2),
+      to: last + span / 2,
+    });
   }, [visible.length]);
 
-  // Replay start / selection markers.
+  // When picking a replay start, bring that candle into view so the marker is visible.
+  useEffect(() => {
+    if (!isSelecting || selectedIndex === null) return;
+    const ts = chartRef.current?.timeScale();
+    if (!ts) return;
+    atRightEdgeRef.current = false;
+    ts.setVisibleLogicalRange({
+      from: Math.max(0, selectedIndex - 120),
+      to: Math.min(candles.length - 1, selectedIndex + 80),
+    });
+  }, [isSelecting, selectedIndex, candles]);
+
+  // Replay start / selection markers + trade entry/exit markers.
   useEffect(() => {
     const plugin = markersRef.current;
     if (!plugin) return;
     const markers: SeriesMarker<Time>[] = [];
     if (isSelecting && selectedIndex !== null && selectedIndex < candles.length) {
+      const sel = candles[selectedIndex];
+      if (!sel) return;
       markers.push({
-        time: toChartTime(candles[selectedIndex].time),
+        time: toChartTime(sel.time),
         position: 'belowBar',
         color: COLORS.accent,
         shape: 'circle',
         text: 'Replay starts here',
         size: 1,
       });
-    } else if (replayActive && replayStartIndex !== null && replayStartIndex < candles.length) {
+    }
+    if (replayActive && replayStartIndex !== null && replayStartIndex < candles.length) {
+      const start = candles[replayStartIndex];
+      if (!start) return;
       markers.push({
-        time: toChartTime(candles[replayStartIndex].time),
+        time: toChartTime(start.time),
         position: 'belowBar',
         color: COLORS.accent,
         shape: 'circle',
@@ -506,8 +758,35 @@ export function TradingChart({
         size: 1,
       });
     }
+    if (!isSelecting) {
+      // Entry/exit markers, only for bars currently in the revealed series.
+      const visibleTimes = new Set(visible.map((c) => c.time));
+      for (const p of positions) {
+        if (!visibleTimes.has(p.openedAt)) continue;
+        markers.push({
+          time: toChartTime(p.openedAt),
+          position: p.direction === 'long' ? 'belowBar' : 'aboveBar',
+          color: p.direction === 'long' ? COLORS.up : COLORS.down,
+          shape: p.direction === 'long' ? 'arrowUp' : 'arrowDown',
+          text: p.direction === 'long' ? 'L' : 'S',
+          size: 1,
+        });
+      }
+      for (const t of closedTrades ?? []) {
+        if (!visibleTimes.has(t.closedAt)) continue;
+        markers.push({
+          time: toChartTime(t.closedAt),
+          position: t.direction === 'long' ? 'aboveBar' : 'belowBar',
+          color: COLORS.text,
+          shape: 'square',
+          text: 'X',
+          size: 1,
+        });
+      }
+    }
     plugin.setMarkers(markers);
-  }, [isSelecting, selectedIndex, replayActive, replayStartIndex, candles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSelecting, selectedIndex, replayActive, replayStartIndex, candles, visible, positions, closedTrades]);
 
   // Current price line + open-position SL/TP/entry price lines.
   useEffect(() => {
@@ -573,12 +852,33 @@ export function TradingChart({
   }, [currentPrice, positions, decimals]);
 
   const hovered = hover ?? visible[visible.length - 1];
-  const prevClose = visible.length > 1 ? visible[visible.length - 2].close : hovered?.open ?? 0;
+  const prev = visible[visible.length - 2];
+  const prevClose = prev ? prev.close : hovered?.open ?? 0;
   const change = hovered && prevClose ? ((hovered.close - prevClose) / prevClose) * 100 : 0;
+
+  // Indicator values at the hovered bar (TradingView legend parity). The SMA/EMA
+  // arrays are recomputed only when the revealed slice changes (not on every
+  // crosshair hover), then indexed by the hovered bar.
+  const indicatorArrays = useMemo(() => {
+    if (!showIndicators || visible.length < 2) return null;
+    return { sma: sma(visible, 20), ema: ema(visible, 50) };
+  }, [visible, showIndicators]);
+
+  const indicatorValues = useMemo(() => {
+    if (!indicatorArrays || !hovered) return null;
+    const idx = visible.findIndex((c) => c.time === hovered.time);
+    if (idx < 0) return null;
+    return { sma: indicatorArrays.sma[idx], ema: indicatorArrays.ema[idx] };
+  }, [indicatorArrays, hovered, visible]);
 
   return (
     <div className="relative h-full w-full min-h-0">
       <div ref={containerRef} className="h-full w-full" aria-label="Price chart" />
+      <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
+        <span className="select-none font-mono text-[56px] font-black uppercase leading-none tracking-widest text-white/[0.04]">
+          {candles.length === 0 ? 'No Data' : replayActive ? 'Replay' : symbol}
+        </span>
+      </div>
       <div className="absolute bottom-2 left-1/2 z-20 -translate-x-1/2 max-w-[calc(100%-16px)]">
         <DrawingToolbar
           tool={tool}
@@ -589,8 +889,56 @@ export function TradingChart({
           hasDrawings={drawingManagerRef.current?.hasDrawings() ?? false}
         />
       </div>
+      {/* Back-to-latest: shown while scrolled away from the newest bar (TradingView parity). */}
+      {awayFromEdge && visible.length > 0 && (
+        <Tooltip content="Back to latest bar">
+          <button
+            onClick={() => {
+              const ts = chartRef.current?.timeScale();
+              if (!ts) return;
+              const r = ts.getVisibleLogicalRange();
+              const span = r && r.to > r.from ? r.to - r.from : 160;
+              const last = Math.max(0, visible.length - 1);
+              atRightEdgeRef.current = true;
+              ts.setVisibleLogicalRange({
+                from: Math.max(0, last - span / 2),
+                to: last + span / 2,
+              });
+            }}
+            aria-label="Scroll to the latest bar"
+            className="absolute bottom-10 right-2 z-20 flex h-7 w-7 items-center justify-center rounded-sm border border-bg-border bg-bg-panel/95 text-text-secondary shadow-neo-sm transition-colors hover:border-accent hover:text-text-primary"
+          >
+            <ArrowRightToLine size={14} />
+          </button>
+        </Tooltip>
+      )}
+      {/* Price-scale reset: shown while the user has manually panned/zoomed the
+          price axis, so replay autoscale can be re-engaged (TradingView parity). */}
+      {priceScaleManual && visible.length > 0 && (
+        <Tooltip content="Reset price scale">
+          <button
+            onClick={() => {
+              const cs = candleSeriesRef.current;
+              if (!cs) return;
+              const ps = cs.priceScale();
+              const lr = chartRef.current?.timeScale().getVisibleLogicalRange();
+              priceScaleManualRef.current = false;
+              setPriceScaleManual(false);
+              if (lr) fitPriceScaleToCandles(ps, visible.slice(Math.max(0, Math.floor(lr.from))));
+            }}
+            aria-label="Reset price scale to auto-fit"
+            className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-sm border border-bg-border bg-bg-panel/95 text-text-secondary shadow-neo-sm transition-colors hover:border-accent hover:text-text-primary"
+          >
+            <ScanSearch size={14} />
+          </button>
+        </Tooltip>
+      )}
       {/* Legend overlay */}
-      <div className="pointer-events-none absolute left-2 top-2 z-10 font-mono text-[11px] leading-relaxed text-text-secondary">
+      <div
+        className={`pointer-events-none absolute left-2 z-10 font-mono text-[11px] leading-relaxed text-text-secondary ${
+          replayActive ? 'top-2 lg:top-[140px]' : 'top-2'
+        }`}
+      >
         <div className="flex items-center gap-2">
           <span className="font-semibold text-text-primary">{symbol}</span>
           <span className="rounded-sm bg-bg-elevated px-1.5 py-px text-[10px] text-text-secondary">
@@ -625,6 +973,22 @@ export function TradingChart({
               <span className="text-text-muted">VOL</span>{' '}
               <span className="text-text-primary">{formatVolume(hovered.volume)}</span>
             </span>
+            {indicatorValues && (
+              <>
+                {indicatorValues.sma !== null && indicatorValues.sma !== undefined && (
+                  <span>
+                    <span className="text-text-muted">SMA20</span>{' '}
+                    <span className="text-[#4f8cff]">{formatPrice(indicatorValues.sma, decimals)}</span>
+                  </span>
+                )}
+                {indicatorValues.ema !== null && indicatorValues.ema !== undefined && (
+                  <span>
+                    <span className="text-text-muted">EMA50</span>{' '}
+                    <span className="text-[#eab308]">{formatPrice(indicatorValues.ema, decimals)}</span>
+                  </span>
+                )}
+              </>
+            )}
             <span className="text-text-muted">{formatCandleDate(hovered.time, timeframe)}</span>
             {change !== 0 && prevClose > 0 && (
               <span className={change >= 0 ? 'text-up' : 'text-down'}>

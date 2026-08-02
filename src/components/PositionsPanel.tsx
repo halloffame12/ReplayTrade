@@ -41,7 +41,7 @@ export function PositionsPanel({
       {positions.map((p) => {
         const pnl = positionPnl(p, currentPrice);
         const value = positionValue(p, currentPrice);
-        const pnlPct = ((pnl / (p.entryPrice * p.quantity)) * 100) || 0;
+        const pnlPct = ((pnl / (p.entryPrice * p.remaining)) * 100) || 0;
         const risk = positionRisk(p);
         const r = rMultiple(pnl, risk);
         return (

@@ -33,6 +33,7 @@ export interface ReplayControls {
   togglePlay: () => void;
   nextCandle: () => void;
   previousCandle: () => void;
+  skipBackward: (count: number) => void;
   skipForward: (count: number) => void;
   resetReplay: () => void;
   exitReplay: () => void;

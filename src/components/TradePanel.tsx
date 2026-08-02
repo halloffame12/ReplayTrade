@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import type { Direction } from '../types/trading';
 import type { OrderDraft } from '../types/trading';
@@ -35,7 +35,15 @@ export function TradePanel({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
+  // Once the user edits the entry price, stop auto-following the live price so
+  // replay ticks never overwrite what they typed.
+  const entryTouched = useRef(false);
   useEffect(() => {
+    entryTouched.current = false;
+  }, [symbol]);
+
+  useEffect(() => {
+    if (entryTouched.current) return;
     if (currentPrice > 0) {
       setEntryStr(currentPrice.toFixed(decimals));
     }
@@ -183,7 +191,10 @@ export function TradePanel({
             inputMode="decimal"
             step="any"
             value={entryStr}
-            onChange={(e) => setEntryStr(e.target.value)}
+            onChange={(e) => {
+              entryTouched.current = true;
+              setEntryStr(e.target.value);
+            }}
             className={inputCls(submitted && draft.entryPrice <= 0)}
             aria-label="Entry price"
           />
@@ -305,6 +316,7 @@ export function TradePanel({
         <ConfirmModal
           symbol={symbol}
           draft={draft}
+          decimals={decimals}
           onConfirm={confirmPlace}
           onCancel={() => setConfirmOpen(false)}
         />
@@ -347,11 +359,13 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: 'up'
 function ConfirmModal({
   symbol,
   draft,
+  decimals,
   onConfirm,
   onCancel,
 }: {
   symbol: string;
   draft: OrderDraft;
+  decimals: number;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -384,14 +398,14 @@ function ConfirmModal({
           </div>
           <dl className="mt-3 space-y-1.5">
             <ConfirmRow label="Quantity" value={String(draft.quantity)} />
-            <ConfirmRow label="Entry price" value={formatPrice(draft.entryPrice)} />
+            <ConfirmRow label="Entry price" value={formatPrice(draft.entryPrice, decimals)} />
             <ConfirmRow
               label="Stop-loss"
-              value={draft.stopLoss !== null ? formatPrice(draft.stopLoss) : '—'}
+              value={draft.stopLoss !== null ? formatPrice(draft.stopLoss, decimals) : '—'}
             />
             <ConfirmRow
               label="Take-profit"
-              value={draft.takeProfit !== null ? formatPrice(draft.takeProfit) : '—'}
+              value={draft.takeProfit !== null ? formatPrice(draft.takeProfit, decimals) : '—'}
             />
             <ConfirmRow label="Position value" value={formatCurrency(preview.positionValue)} />
             <ConfirmRow label="Est. risk" value={formatCurrency(preview.estimatedRisk)} />

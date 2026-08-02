@@ -290,7 +290,7 @@ export function computePerformance(history: ClosedTrade[]): {
       avgLoss: losses.length ? -grossLoss / losses.length : 0,
       bestTrade: best,
       worstTrade: worst,
-      profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
+      profitFactor,
       maxDrawdown: 0,
       avgR,
       totalR,

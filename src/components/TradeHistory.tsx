@@ -50,7 +50,7 @@ export function TradeHistory({ history, decimals, maxRows = 50 }: TradeHistoryPr
             const win = t.pnl >= 0;
             return (
               <tr key={t.id} className="border-b border-bg-border/50 transition-colors hover:bg-bg-hover/40">
-                <Td className="text-text-muted">{history.length - rows.length + i + 1}</Td>
+                <Td className="text-text-muted">{history.length - i}</Td>
                 <Td className="text-text-primary">{t.symbol}</Td>
                 <Td>
                   <span

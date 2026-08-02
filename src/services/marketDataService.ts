@@ -235,7 +235,7 @@ export function getOandaToken(): string {
 
 export function getOandaEnv(): 'practice' | 'live' {
   try {
-    return (localStorage.getItem(OANDA_ENV_KEY) as 'practice' | 'live' | null) ?? 'practice';
+    return localStorage.getItem(OANDA_ENV_KEY) === 'live' ? 'live' : 'practice';
   } catch {
     return 'practice';
   }

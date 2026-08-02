@@ -51,15 +51,19 @@ export function usePaperTrading(symbol: string) {
     setState({ ...storeRef.current });
   }, []);
 
-  const commitEquityWatermark = useCallback((price: number) => {
-    const st = storeRef.current;
-    const eq = equity(st, price);
-    const peak = Math.max(st.peakEquity, eq);
-    const dd = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
-    if (peak !== st.peakEquity || dd > st.maxDrawdown) {
-      storeRef.current = { ...st, peakEquity: peak, maxDrawdown: Math.max(st.maxDrawdown, dd) };
-    }
-  }, []);
+  const commitEquityWatermark = useCallback(
+    (price: number) => {
+      const st = storeRef.current;
+      const eq = equity(st, price);
+      const peak = Math.max(st.peakEquity, eq);
+      const dd = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
+      if (peak !== st.peakEquity || dd > st.maxDrawdown) {
+        storeRef.current = { ...st, peakEquity: peak, maxDrawdown: Math.max(st.maxDrawdown, dd) };
+        sync();
+      }
+    },
+    [sync],
+  );
 
   const startSession = useCallback(
     (startingBalance: number) => {
@@ -207,10 +211,14 @@ export function usePaperTrading(symbol: string) {
     [commitEquityWatermark, sync],
   );
 
-  const updatePrice = useCallback((price: number) => {
-    priceRef.current = price;
-    setCurrentPrice(price);
-  }, []);
+  const updatePrice = useCallback(
+    (price: number) => {
+      priceRef.current = price;
+      setCurrentPrice(price);
+      commitEquityWatermark(price);
+    },
+    [commitEquityWatermark],
+  );
 
   const reset = useCallback(() => {
     storeRef.current = freshState(storeRef.current.startingBalance);

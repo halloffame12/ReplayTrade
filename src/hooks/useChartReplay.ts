@@ -10,6 +10,7 @@ import {
   playReplay,
   resetReplay,
   REPLAY_INTERVALS_MS,
+  skipBackwardReplay,
   skipForwardReplay,
   stepBackReplay,
 } from '../utils/replayEngine';
@@ -79,7 +80,19 @@ export function useChartReplay() {
 
   const nextCandle = useCallback(() => setState(advanceReplay), []);
 
-  const previousCandle = useCallback(() => setState(stepBackReplay), []);
+  const previousCandle = useCallback(() => {
+    setState((s) => {
+      const stepped = stepBackReplay(s);
+      return s.isPlaying ? pauseReplay(stepped) : stepped;
+    });
+  }, []);
+
+  const skipBackward = useCallback((count: number) => {
+    setState((s) => {
+      const stepped = skipBackwardReplay(s, count);
+      return s.isPlaying ? pauseReplay(stepped) : stepped;
+    });
+  }, []);
 
   const skipForward = useCallback(
     (count: number) => setState((s) => skipForwardReplay(s, count)),
@@ -123,9 +136,6 @@ export function useChartReplay() {
         if (next.currentReplayIndex === cur.currentReplayIndex) break;
         cur = next;
       }
-      if (cur.currentReplayIndex > s.maxRevealedIndex) {
-        setFollowSignal((n) => n + 1);
-      }
       setState(cur);
       timerRef.current = window.setTimeout(tick, intervalMs);
     };
@@ -152,6 +162,7 @@ export function useChartReplay() {
     togglePlay,
     nextCandle,
     previousCandle,
+    skipBackward,
     skipForward,
     resetReplay: resetReplayAction,
     exitReplay: exitReplayAction,

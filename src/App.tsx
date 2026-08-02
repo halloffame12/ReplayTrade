@@ -1,7 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, BarChart3, Briefcase, History, Info, Play, Radio, X } from 'lucide-react';
+import type { IChartApi } from 'lightweight-charts';
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Briefcase,
+  CircleHelp,
+  History,
+  Info,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Radio,
+  X,
+} from 'lucide-react';
 import { Header } from './components/Header';
 import { MarketSelector } from './components/MarketSelector';
+import { OnboardingOverlay, isOnboarded } from './components/OnboardingOverlay';
+import { ShortcutsHelp } from './components/ShortcutsHelp';
 import { PositionsPanel } from './components/PositionsPanel';
 import { ReplayStartSelector } from './components/ReplayStartSelector';
 import { ReplayToolbar } from './components/ReplayToolbar';
@@ -14,10 +32,11 @@ import { useChartReplay } from './hooks/useChartReplay';
 import { useMarketData } from './hooks/useMarketData';
 import { BALANCE_PRESETS, DEFAULT_BALANCE, usePaperTrading } from './hooks/usePaperTrading';
 import type { DataSource, DataSourceOption, Timeframe } from './types/market';
-import { SYMBOLS, availableSources, marketSourceFor, persistSourceChoice } from './types/market';
+import { SYMBOLS, TIME_FRAMES, availableSources, marketSourceFor, persistSourceChoice } from './types/market';
 import type { OrderDraft } from './types/trading';
 import type { ReplayState } from './types/replay';
 import { combinePerformance, formatCurrency, formatPrice } from './utils/tradingCalculations';
+import { REPLAY_SPEEDS } from './utils/replayEngine';
 import type { DataRange } from './hooks/useMarketData';
 import type { LoadProgress } from './services/marketDataService';
 import { formatShortDate } from './utils/candleUtils';
@@ -46,13 +65,19 @@ function loadPref<T>(key: string, fallback: T): T {
   return fallback;
 }
 
+function loadStoredSymbol(): string {
+  const v = loadPref(STORAGE_SYMBOL, 'XAUUSD');
+  return SYMBOLS.some((s) => s.symbol === v) ? v : 'XAUUSD';
+}
+
+function loadStoredTimeframe(): Timeframe {
+  const v = loadPref(STORAGE_TF, '15m');
+  return (TIME_FRAMES as readonly string[]).includes(v) ? (v as Timeframe) : '15m';
+}
+
 export default function App() {
-  const [symbol, setSymbol] = useState<string>(() =>
-    loadPref(STORAGE_SYMBOL, 'XAUUSD'),
-  );
-  const [timeframe, setTimeframe] = useState<Timeframe>(() =>
-    loadPref(STORAGE_TF, '15m') as Timeframe,
-  );
+  const [symbol, setSymbol] = useState<string>(() => loadStoredSymbol());
+  const [timeframe, setTimeframe] = useState<Timeframe>(() => loadStoredTimeframe());
   const [selectedSource, setSelectedSource] = useState<DataSourceOption>(() =>
     marketSourceFor(symbol),
   );
@@ -63,6 +88,13 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [equitySeries, setEquitySeries] = useState<number[]>([]);
   const [showIndicators, setShowIndicators] = useState(true);
+  const [showVolume, setShowVolume] = useState(true);
+  const [onboarded, setOnboarded] = useState<boolean>(() => isOnboarded());
+  const [showHelp, setShowHelp] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [chartExpanded, setChartExpanded] = useState(false);
   const [oandaToken, setOandaToken] = useState<string>(() => {
     try {
       return localStorage.getItem(OANDA_TOKEN_KEY) ?? '';
@@ -72,7 +104,7 @@ export default function App() {
   });
   const [oandaEnv, setOandaEnv] = useState<'practice' | 'live'>(() => {
     try {
-      return (localStorage.getItem(OANDA_ENV_KEY) as 'practice' | 'live' | null) ?? 'practice';
+      return localStorage.getItem(OANDA_ENV_KEY) === 'live' ? 'live' : 'practice';
     } catch {
       return 'practice';
     }
@@ -84,6 +116,15 @@ export default function App() {
 
   const lastProcessedRef = useRef(-1);
   const completionHandledRef = useRef(false);
+  const chartApiRef = useRef<IChartApi | null>(null);
+  const onboardedRef = useRef(onboarded);
+  onboardedRef.current = onboarded;
+  const showHelpRef = useRef(showHelp);
+  showHelpRef.current = showHelp;
+  const chartExpandedRef = useRef(chartExpanded);
+  chartExpandedRef.current = chartExpanded;
+  const orderSheetOpenRef = useRef(orderSheetOpen);
+  orderSheetOpenRef.current = orderSheetOpen;
 
   const decimals = SYMBOLS.find((s) => s.symbol === symbol)?.decimals ?? 2;
   const replayActive =
@@ -91,6 +132,14 @@ export default function App() {
     replay.state.mode === 'playing' ||
     replay.state.mode === 'paused' ||
     replay.state.mode === 'completed';
+  // Order placement only makes sense while the tape can still move. The replay
+  // is over in 'completed' mode, so block new orders there (a position placed
+  // after the final candle could never be evaluated).
+  const tradingEnabled =
+    replay.state.mode === 'ready' ||
+    replay.state.mode === 'playing' ||
+    replay.state.mode === 'paused';
+  const tradingDisabled = !tradingEnabled || market.loading || market.candles.length === 0;
 
   const notify = useCallback((message: string, tone: Toast['tone'] = 'info') => {
     const id = ++toastId;
@@ -98,6 +147,41 @@ export default function App() {
     window.setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4500);
+  }, []);
+
+  const handleChartReady = useCallback((chart: IChartApi | null) => {
+    chartApiRef.current = chart;
+  }, []);
+
+  const handleTakeScreenshot = useCallback(() => {
+    const chart = chartApiRef.current;
+    if (!chart) return;
+    const canvas = chart.takeScreenshot(true, false);
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `replaytrade-${symbol}-${timeframe}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [symbol, timeframe]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen()?.catch(() => {});
+    } else {
+      document.documentElement.requestFullscreen()?.catch(() => {});
+    }
+  }, []);
+
+  const toggleChartExpanded = useCallback(() => {
+    setChartExpanded((v) => !v);
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
   const persistPrefs = useCallback(() => {
@@ -154,7 +238,7 @@ export default function App() {
       completionHandledRef.current = false;
       paper.updatePrice(candle?.close ?? 0);
     },
-    [replay, paper, balanceSetting],
+    [replay.confirmStart, replay.state.candles, paper.startSession, paper.updatePrice, balanceSetting],
   );
 
   const handleSelectCandle = useCallback(
@@ -213,9 +297,25 @@ export default function App() {
     const index = replay.state.currentReplayIndex;
     const from = lastProcessedRef.current;
 
+    // While idle/selecting the whole history is visible, so the mark price is
+    // the latest close and no candles are "revealed" yet.
+    const active =
+      replay.state.mode === 'ready' ||
+      replay.state.mode === 'playing' ||
+      replay.state.mode === 'paused' ||
+      replay.state.mode === 'completed';
+    if (!active) {
+      const last = candles[candles.length - 1];
+      if (last) paper.updatePrice(last.close);
+      lastProcessedRef.current = candles.length - 1;
+      return;
+    }
+
     if (index > from) {
       for (let i = from + 1; i <= index; i++) {
-        const { closedTrades } = paper.processTick(candles[i]);
+        const c = candles[i];
+        if (!c) continue;
+        const { closedTrades } = paper.processTick(c);
         closedTrades.forEach((t) =>
           notify(
             `${t.symbol} ${t.direction === 'long' ? 'long' : 'short'} closed @ ${formatPrice(
@@ -229,10 +329,19 @@ export default function App() {
         );
       }
     } else if (index < from) {
-      paper.updatePrice(candles[index].close);
+      const c = candles[index];
+      if (c) paper.updatePrice(c.close);
     }
     lastProcessedRef.current = index;
-  }, [replay.state.currentReplayIndex, replay.state.candles, paper, notify, decimals]);
+  }, [
+    replay.state.currentReplayIndex,
+    replay.state.candles,
+    replay.state.mode,
+    paper.processTick,
+    paper.updatePrice,
+    notify,
+    decimals,
+  ]);
 
   // Replay complete: close open positions at the final price.
   useEffect(() => {
@@ -252,7 +361,7 @@ export default function App() {
         );
       }
     }
-  }, [replay.state.mode, replay.state.candles, paper, notify]);
+  }, [replay.state.mode, replay.state.candles, paper.closeAllAtPrice, notify]);
 
   const handlePlaceOrder = useCallback(
     (draft: OrderDraft) => {
@@ -273,7 +382,7 @@ export default function App() {
       }
       return result;
     },
-    [paper, replay.state.candles, replay.state.currentReplayIndex, symbol, decimals, notify],
+    [paper.openPosition, replay.state.candles, replay.state.currentReplayIndex, symbol, decimals, notify],
   );
 
   const handleClosePosition = useCallback(
@@ -289,7 +398,7 @@ export default function App() {
         );
       }
     },
-    [paper, decimals, notify],
+    [paper.closePositionById, decimals, notify],
   );
 
   const handleCloseHalf = useCallback(
@@ -302,7 +411,7 @@ export default function App() {
         );
       }
     },
-    [paper, decimals, notify],
+    [paper.closeHalf, decimals, notify],
   );
 
   // Keyboard shortcuts.
@@ -312,27 +421,79 @@ export default function App() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) {
         return;
       }
+      // Let Space activate a focused button (native behaviour) instead of hijacking it.
+      if (e.key === ' ' && target?.tagName === 'BUTTON') return;
+      // While an overlay, dialog or the order sheet is open, let it own the keys
+      // (e.g. Escape must close help without also exiting an active replay).
+      if (!onboardedRef.current || showHelpRef.current || orderSheetOpenRef.current) return;
+      // Global: fullscreen + shortcuts help.
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleFullscreen();
+        return;
+      }
+      // Chart-expanded mode owns Escape: exit it before anything else.
+      if (chartExpandedRef.current) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setChartExpanded(false);
+        }
+        return;
+      }
+      if (e.altKey && (e.key === 'h' || e.key === 'H')) {
+        e.preventDefault();
+        setShowHelp((v) => !v);
+        return;
+      }
       if (replay.state.mode === 'selecting') {
         if (e.key === 'Escape') replay.cancelSelecting();
         return;
       }
-      if (replay.state.mode === 'idle') return;
+      if (replay.state.mode === 'idle') {
+        const tfIndex = Number(e.key) - 1;
+        const tf = TIME_FRAMES[tfIndex];
+        if (tf && tfIndex >= 0 && tfIndex < TIME_FRAMES.length) setTimeframe(tf);
+        return;
+      }
       if (e.key === ' ') {
         e.preventDefault();
         replay.togglePlay();
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
-        replay.nextCandle();
+        if (e.shiftKey) replay.skipForward(5);
+        else replay.nextCandle();
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        replay.previousCandle();
+        if (e.shiftKey) replay.skipBackward(5);
+        else replay.previousCandle();
+      } else if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        const speeds: readonly number[] = REPLAY_SPEEDS;
+        const idx = speeds.indexOf(replay.state.speed);
+        replay.setSpeed(REPLAY_SPEEDS[Math.min(REPLAY_SPEEDS.length - 1, idx + 1)]!);
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        const speeds: readonly number[] = REPLAY_SPEEDS;
+        const idx = speeds.indexOf(replay.state.speed);
+        replay.setSpeed(REPLAY_SPEEDS[Math.max(0, idx - 1)]!);
       } else if (e.key === 'Escape') {
         replay.exitReplay();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [replay]);
+  }, [
+    replay.state.mode,
+    replay.togglePlay,
+    replay.nextCandle,
+    replay.previousCandle,
+    replay.skipForward,
+    replay.skipBackward,
+    replay.setSpeed,
+    replay.cancelSelecting,
+    replay.exitReplay,
+    toggleFullscreen,
+  ]);
 
   const perf = useMemo(
     () => combinePerformance(paper.state.history, paper.state.maxDrawdown),
@@ -346,7 +507,7 @@ export default function App() {
 
   const availableSourcesForSymbol = availableSources(symbol);
 
-  const chartNode = (
+  const renderChart = () => (
     <div className="relative h-full w-full">
       <TradingChart
         candles={market.candles}
@@ -355,6 +516,7 @@ export default function App() {
         decimals={decimals}
         currentPrice={paper.currentPrice}
         positions={paper.state.positions}
+        closedTrades={paper.state.history}
         replayActive={replayActive}
         visibleStartIndex={replay.state.visibleStartIndex}
         currentReplayIndex={replay.state.currentReplayIndex}
@@ -366,6 +528,8 @@ export default function App() {
         autoFollow={replay.autoFollow}
         followSignal={replay.followSignal}
         showIndicators={showIndicators}
+        showVolume={showVolume}
+        onChartReady={handleChartReady}
       />
       {market.loading && <LoadingOverlay progress={market.progress} />}
       {replay.state.mode === 'selecting' && (
@@ -383,7 +547,7 @@ export default function App() {
       {(replay.state.mode === 'ready' ||
         replay.state.mode === 'playing' ||
         replay.state.mode === 'paused') && (
-        <div className="hidden lg:block">
+        <div className={chartExpanded ? 'block' : 'hidden lg:block'}>
           <ReplayToolbar
             controls={replay}
             timeframe={timeframe}
@@ -396,6 +560,8 @@ export default function App() {
       )}
     </div>
   );
+
+  const chartNode = renderChart();
 
   const tabButtons: { id: BottomTab; label: string; icon: React.ReactNode }[] = [
     { id: 'positions', label: 'Positions', icon: <Briefcase size={13} /> },
@@ -418,6 +584,7 @@ export default function App() {
           setActiveTab('positions');
         }}
         balance={paper.state.balance}
+        startingBalance={paper.state.startingBalance}
         totalPnl={paper.totalPnl}
         currentPrice={paper.currentPrice}
         decimals={decimals}
@@ -432,46 +599,82 @@ export default function App() {
         sourceOption={selectedSource}
         availableSources={availableSourcesForSymbol}
         onSourceChange={handleSourceChange}
+        fullscreen={fullscreen}
+        onToggleFullscreen={toggleFullscreen}
+        chartExpanded={chartExpanded}
+        onToggleChartExpanded={toggleChartExpanded}
+        onShowHelp={() => setShowHelp(true)}
+        onTakeScreenshot={handleTakeScreenshot}
       />
 
       <div className="flex flex-1 min-h-0 flex-col md:flex-row">
         {/* Left tools panel (desktop) */}
-        <aside className="hidden w-[240px] shrink-0 overflow-y-auto border-r border-bg-border bg-bg-panel/40 p-3 lg:block">
-          <MarketSelector
-            symbol={symbol}
-            timeframe={timeframe}
-            onSymbolChange={setSymbol}
-            onTimeframeChange={setTimeframe}
-            loading={market.loading}
-            progress={market.progress}
-            error={market.error}
-            source={market.source}
-            range={market.range}
-            candleCount={market.candles.length}
-            canStartReplay={canStartReplay}
-            replayActive={replayActive}
-            onStartReplay={handleStartReplay}
-            onRetry={() => void market.load(symbol, timeframe)}
-            onUseDemo={() => market.useDemoData(symbol, timeframe)}
-            sourceOption={selectedSource}
-            availableSources={availableSourcesForSymbol}
-            onSourceChange={handleSourceChange}
-          />
-          <SessionMiniCard
-            balance={paper.state.balance}
-            equity={paper.equity}
-            available={paper.available}
-            unrealized={paper.unrealizedPnl}
-            positions={paper.state.positions.length}
-          />
+        <aside
+          className={`hidden shrink-0 overflow-y-auto border-r border-bg-border bg-bg-panel/40 lg:block ${
+            chartExpanded ? '!hidden' : ''
+          } ${leftCollapsed ? 'w-[34px] p-1' : 'w-[240px] p-3'}`}
+        >
+          {leftCollapsed ? (
+            <button
+              onClick={() => setLeftCollapsed(false)}
+              aria-label="Expand left panel"
+              title="Expand left panel"
+              className="mx-auto flex h-8 w-full items-center justify-center rounded-sm text-text-muted hover:bg-bg-hover hover:text-text-primary"
+            >
+              <PanelLeftOpen size={15} />
+            </button>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  Markets
+                </span>
+                <button
+                  onClick={() => setLeftCollapsed(true)}
+                  aria-label="Collapse left panel"
+                  title="Collapse left panel"
+                  className="rounded-sm p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                >
+                  <PanelLeftClose size={14} />
+                </button>
+              </div>
+              <MarketSelector
+                symbol={symbol}
+                timeframe={timeframe}
+                onSymbolChange={setSymbol}
+                onTimeframeChange={setTimeframe}
+                loading={market.loading}
+                progress={market.progress}
+                error={market.error}
+                source={market.source}
+                range={market.range}
+                candleCount={market.candles.length}
+                canStartReplay={canStartReplay}
+                replayActive={replayActive}
+                onStartReplay={handleStartReplay}
+                onRetry={() => void market.load(symbol, timeframe)}
+                onUseDemo={() => market.useDemoData(symbol, timeframe)}
+                sourceOption={selectedSource}
+                availableSources={availableSourcesForSymbol}
+                onSourceChange={handleSourceChange}
+              />
+              <SessionMiniCard
+                balance={paper.state.balance}
+                equity={paper.equity}
+                available={paper.available}
+                unrealized={paper.unrealizedPnl}
+                positions={paper.state.positions.length}
+              />
+            </>
+          )}
         </aside>
 
         {/* Chart column */}
-        <main className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-[240px] flex-1">{chartNode}</div>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="min-h-[240px] min-w-0 flex-1">{chartNode}</div>
 
           {/* Phones/tablets: compact data status or inline replay toolbar below chart */}
-          <div className="shrink-0 border-t border-bg-border p-2 lg:hidden">
+          <div className={`shrink-0 border-t border-bg-border p-2 lg:hidden ${chartExpanded ? '!hidden' : ''}`}>
             {replayActive ? (
               <ReplayToolbar
                 controls={replay}
@@ -499,36 +702,67 @@ export default function App() {
         </main>
 
         {/* Right trade panel (tablet & desktop) */}
-        <aside className="hidden w-[260px] shrink-0 overflow-y-auto border-l border-bg-border bg-bg-panel/40 p-3 md:block lg:w-[300px]">
-          <div className="mb-2 flex items-center gap-1.5">
-            <Activity size={14} className="text-accent" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              Trade Panel
-            </span>
-          </div>
-          <TradePanel
-            symbol={symbol}
-            currentPrice={paper.currentPrice}
-            availableBalance={paper.available}
-            decimals={decimals}
-            disabled={market.loading || market.candles.length === 0}
-            onPlaceOrder={handlePlaceOrder}
-          />
-          <div className="mt-3 rounded-sm border border-bg-border bg-bg-panel p-2.5 font-mono text-[11px]">
-            <AccountRow label="Equity" value={formatCurrency(paper.equity)} />
-            <AccountRow label="Available" value={formatCurrency(paper.available)} />
-            <AccountRow label="Open value" value={formatCurrency(paper.openValue)} />
-            <AccountRow
-              label="Unrealized"
-              value={formatCurrency(paper.unrealizedPnl)}
-              tone={paper.unrealizedPnl >= 0 ? 'up' : 'down'}
-            />
-          </div>
+        <aside
+          className={`hidden shrink-0 overflow-y-auto border-l border-bg-border bg-bg-panel/40 md:block ${
+            rightCollapsed ? 'w-[34px] p-1 lg:w-[40px]' : 'w-[260px] p-3 lg:w-[300px]'
+          }`}
+        >
+          {rightCollapsed ? (
+            <button
+              onClick={() => setRightCollapsed(false)}
+              aria-label="Expand right panel"
+              title="Expand right panel"
+              className="mx-auto flex h-8 w-full items-center justify-center rounded-sm text-text-muted hover:bg-bg-hover hover:text-text-primary"
+            >
+              <PanelRightOpen size={15} />
+            </button>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Activity size={14} className="text-accent" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    Trade Panel
+                  </span>
+                </div>
+                <button
+                  onClick={() => setRightCollapsed(true)}
+                  aria-label="Collapse right panel"
+                  title="Collapse right panel"
+                  className="rounded-sm p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                >
+                  <PanelRightClose size={14} />
+                </button>
+              </div>
+              <TradePanel
+                symbol={symbol}
+                currentPrice={paper.currentPrice}
+                availableBalance={paper.available}
+                decimals={decimals}
+                disabled={tradingDisabled}
+                onPlaceOrder={handlePlaceOrder}
+              />
+              <div className="mt-3 rounded-sm border border-bg-border bg-bg-panel p-2.5 font-mono text-[11px]">
+                <AccountRow label="Equity" value={formatCurrency(paper.equity)} />
+                <AccountRow label="Available" value={formatCurrency(paper.available)} />
+                <AccountRow label="Open value" value={formatCurrency(paper.openValue)} />
+                <AccountRow
+                  label="Unrealized"
+                  value={formatCurrency(paper.unrealizedPnl)}
+                  tone={paper.unrealizedPnl >= 0 ? 'up' : 'down'}
+                />
+              </div>
+            </>
+          )}
         </aside>
       </div>
 
       {/* Bottom panel */}
-      <div className="shrink-0 border-t border-bg-border bg-bg-panel pb-[env(safe-area-inset-bottom)]">
+      <div
+        className={`shrink-0 border-t border-bg-border bg-bg-panel pb-[env(safe-area-inset-bottom)] ${
+          chartExpanded ? '!hidden' : ''
+        }`}
+      >
         <div
           className="flex items-center gap-1 overflow-x-auto border-b border-bg-border px-2 pt-1.5"
           role="tablist"
@@ -556,9 +790,19 @@ export default function App() {
           ))}
           <button
             onClick={() => setOrderSheetOpen(true)}
-            className="ml-auto flex items-center gap-1.5 rounded-sm bg-accent px-3 py-1.5 text-[11px] font-bold text-white lg:hidden"
+            disabled={tradingDisabled}
+            title={replayActive ? 'Place order' : 'Start a replay to trade'}
+            className="ml-auto flex items-center gap-1.5 rounded-sm bg-accent px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 lg:hidden"
           >
             Trade
+          </button>
+          <button
+            onClick={() => setShowHelp(true)}
+            aria-label="Keyboard shortcuts and help"
+            title="Shortcuts (Alt+H)"
+            className="ml-auto hidden items-center gap-1 rounded-sm border border-bg-border bg-bg-elevated px-2 py-1.5 text-[11px] font-semibold text-text-secondary transition-colors hover:border-accent hover:text-text-primary lg:flex"
+          >
+            <CircleHelp size={13} /> Shortcuts
           </button>
         </div>
         <div className="max-h-[220px] overflow-y-auto lg:max-h-[240px]">
@@ -597,6 +841,8 @@ export default function App() {
               onBalanceChange={setBalanceSetting}
               showIndicators={showIndicators}
               onToggleIndicators={() => setShowIndicators((v) => !v)}
+              showVolume={showVolume}
+              onToggleVolume={() => setShowVolume((v) => !v)}
               oandaToken={oandaToken}
               oandaEnv={oandaEnv}
               onOandaTokenChange={handleOandaTokenChange}
@@ -607,7 +853,11 @@ export default function App() {
       </div>
 
       {/* Disclaimer */}
-      <div className="shrink-0 border-t border-bg-border bg-bg-base px-3 py-1 text-center font-mono text-[9px] text-text-muted">
+      <div
+        className={`shrink-0 border-t border-bg-border bg-bg-base px-3 py-1 text-center font-mono text-[9px] text-text-muted ${
+          chartExpanded ? '!hidden' : ''
+        }`}
+      >
         Simulated trading environment. Market data may be delayed or unavailable. Educational use
         only. Not financial advice.
       </div>
@@ -641,12 +891,16 @@ export default function App() {
               currentPrice={paper.currentPrice}
               availableBalance={paper.available}
               decimals={decimals}
-              disabled={market.loading || market.candles.length === 0}
+              disabled={tradingDisabled}
               onPlaceOrder={handlePlaceOrder}
             />
           </div>
         </div>
       )}
+
+      {/* First-run onboarding + shortcuts help */}
+      <OnboardingOverlay open={!onboarded} onClose={() => setOnboarded(true)} />
+      {showHelp && <ShortcutsHelp onClose={() => setShowHelp(false)} />}
 
       {/* Replay complete modal */}
       {replay.state.mode === 'completed' && (
@@ -679,7 +933,7 @@ export default function App() {
           <div
             key={t.id}
             role="status"
-            className={`pointer-events-auto flex items-start gap-2 rounded-sm border px-3 py-2 font-mono text-[11px] shadow-neo-sm animate-fade-in ${
+            className={`pointer-events-none flex items-start gap-2 rounded-sm border px-3 py-2 font-mono text-[11px] shadow-neo-sm animate-fade-in ${
               t.tone === 'success'
                 ? 'border-up/50 bg-up-dim text-up'
                 : t.tone === 'danger'
@@ -691,7 +945,7 @@ export default function App() {
             <button
               onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
               aria-label="Dismiss"
-              className="opacity-60 hover:opacity-100"
+              className="pointer-events-auto opacity-60 hover:opacity-100"
             >
               <X size={12} />
             </button>
@@ -905,6 +1159,8 @@ function SessionDetails({
   onBalanceChange,
   showIndicators,
   onToggleIndicators,
+  showVolume,
+  onToggleVolume,
   oandaToken,
   oandaEnv,
   onOandaTokenChange,
@@ -920,6 +1176,8 @@ function SessionDetails({
   onBalanceChange: (v: number) => void;
   showIndicators: boolean;
   onToggleIndicators: () => void;
+  showVolume: boolean;
+  onToggleVolume: () => void;
   oandaToken: string;
   oandaEnv: 'practice' | 'live';
   onOandaTokenChange: (v: string) => void;
@@ -1027,13 +1285,22 @@ function SessionDetails({
             Token is stored only in your browser. Saving reloads the chart when XAU/USD is selected.
           </p>
         </div>
-        <button
-          onClick={onToggleIndicators}
-          aria-pressed={showIndicators}
-          className="rounded-sm border border-bg-border bg-bg-elevated px-3 py-1.5 text-[11px] font-semibold text-text-primary transition-colors hover:border-accent"
-        >
-          {showIndicators ? 'Hide SMA / EMA overlay' : 'Show SMA / EMA overlay'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={onToggleIndicators}
+            aria-pressed={showIndicators}
+            className="rounded-sm border border-bg-border bg-bg-elevated px-3 py-1.5 text-[11px] font-semibold text-text-primary transition-colors hover:border-accent"
+          >
+            {showIndicators ? 'Hide SMA / EMA overlay' : 'Show SMA / EMA overlay'}
+          </button>
+          <button
+            onClick={onToggleVolume}
+            aria-pressed={showVolume}
+            className="rounded-sm border border-bg-border bg-bg-elevated px-3 py-1.5 text-[11px] font-semibold text-text-primary transition-colors hover:border-accent"
+          >
+            {showVolume ? 'Hide Volume' : 'Show Volume'}
+          </button>
+        </div>
       </div>
     </div>
   );

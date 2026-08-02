@@ -15,21 +15,27 @@ export function normalizeCandles(candles: Candle[]): Candle[] {
 /** Binary search for the index of the candle closest to the given timestamp. */
 export function nearestIndexByTime(candles: Candle[], time: number): number {
   if (candles.length === 0) return -1;
+  const first = candles[0];
+  const last = candles[candles.length - 1];
+  if (!first || !last) return -1;
+  if (time <= first.time) return 0;
+  if (time >= last.time) return candles.length - 1;
   let lo = 0;
   let hi = candles.length - 1;
-  if (time <= candles[0].time) return 0;
-  if (time >= candles[hi].time) return hi;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (candles[mid].time < time) {
+    const c = candles[mid];
+    if (!c) return lo;
+    if (c.time < time) {
       lo = mid + 1;
     } else {
       hi = mid;
     }
   }
-  const left = lo > 0 ? candles[lo - 1].time : candles[lo].time;
-  const right = candles[lo].time;
-  return Math.abs(time - left) <= Math.abs(right - time) ? Math.max(0, lo - 1) : lo;
+  const left = lo > 0 ? candles[lo - 1] : candles[lo];
+  const right = candles[lo];
+  if (!left || !right) return lo;
+  return Math.abs(time - left.time) <= Math.abs(right.time - time) ? Math.max(0, lo - 1) : lo;
 }
 
 export function formatCandleDate(time: number, timeframe: string): string {

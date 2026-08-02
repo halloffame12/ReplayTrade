@@ -637,7 +637,7 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
 
   // -------------------------------------------------------------- pointer API
 
-  onPointerDown(x: number, y: number): void {
+  onPointerDown(x: number, y: number, shiftKey?: boolean): void {
     if (!this.mapper.hasData()) return;
     this.hoveredId = null;
     if (this.tool === 'select') {
@@ -655,6 +655,7 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
             startX: x,
             startY: y,
             before: d ? clonePoints(d.points) : [],
+            shiftLocked: shiftKey,
           };
           this.setPanEnabled(false);
         }
@@ -695,15 +696,18 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
     this.notify();
   }
 
-  onPointerMove(x: number, y: number): void {
+  onPointerMove(x: number, y: number, shiftKey?: boolean): void {
     if (!this.mapper.hasData()) return;
     if (this.interaction && this.selectedId) {
+      if (shiftKey !== undefined) {
+        this.interaction.shiftLocked = shiftKey;
+      }
       this.applyDrag(x, y);
       this.requestRender();
       return;
     }
     if (this.draft) {
-      this.updateDraft(x, y);
+      this.updateDraft(x, y, shiftKey);
       this.requestRender();
       return;
     }
@@ -831,7 +835,7 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
     return def?.model ?? 'drag';
   }
 
-  private updateDraft(x: number, y: number): void {
+  private updateDraft(x: number, y: number, shiftKey?: boolean): void {
     if (!this.draft) return;
     const model = this.toolModel(this.draft.type);
     const pt = this.snapAndClamp(x, y);
@@ -844,10 +848,39 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
       case 'click':
         this.draft.points[0] = pt;
         break;
-      case 'drag':
+      case 'drag': {
         if (this.draft.points.length < 2) this.draft.points.push(pt);
-        this.draft.points[this.draft.points.length - 1] = pt;
+        let finalPt = pt;
+        if (shiftKey && this.draft.points[0]) {
+          const p0 = this.draft.points[0];
+          const s0 = this.mapper.chartPointToScreen(p0);
+          const s1 = this.mapper.chartPointToScreen(pt);
+          if (s0 && s1) {
+            if (this.draft.type === 'rectangle' || this.draft.type === 'ellipse') {
+              const dx = s1.x - s0.x;
+              const dy = s1.y - s0.y;
+              const size = Math.max(Math.abs(dx), Math.abs(dy));
+              const nx = s0.x + Math.sign(dx) * size;
+              const ny = s0.y + Math.sign(dy) * size;
+              const cp = this.mapper.screenToChartPoint(nx, ny);
+              if (cp) finalPt = this.clampPoint(cp);
+            } else {
+              const dx = s1.x - s0.x;
+              const dy = s1.y - s0.y;
+              const r = Math.hypot(dx, dy);
+              const angle = Math.atan2(dy, dx);
+              const step = Math.PI / 4;
+              const snappedAngle = Math.round(angle / step) * step;
+              const nx = s0.x + r * Math.cos(snappedAngle);
+              const ny = s0.y + r * Math.sin(snappedAngle);
+              const cp = this.mapper.screenToChartPoint(nx, ny);
+              if (cp) finalPt = this.clampPoint(cp);
+            }
+          }
+        }
+        this.draft.points[this.draft.points.length - 1] = finalPt;
         break;
+      }
       case 'multipoint':
         if (this.draft.points.length === 0) this.draft.points.push(pt);
         this.draft.points[this.draft.points.length - 1] = pt;
@@ -1028,8 +1061,26 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
       case 'fibRetracement':
       case 'measure':
       case 'arrow': {
-        const pt = this.snapAndClamp(x, y);
+        let pt = this.snapAndClamp(x, y);
         if (!pt) return;
+        if (interaction.shiftLocked) {
+          const opposite = handle === 1 ? 0 : 1;
+          const p0 = d.points[opposite];
+          const s0 = p0 ? this.mapper.chartPointToScreen(p0) : null;
+          const s1 = this.mapper.chartPointToScreen(pt);
+          if (s0 && s1) {
+            const dx = s1.x - s0.x;
+            const dy = s1.y - s0.y;
+            const r = Math.hypot(dx, dy);
+            const angle = Math.atan2(dy, dx);
+            const step = Math.PI / 4;
+            const snappedAngle = Math.round(angle / step) * step;
+            const nx = s0.x + r * Math.cos(snappedAngle);
+            const ny = s0.y + r * Math.sin(snappedAngle);
+            const cp = this.mapper.screenToChartPoint(nx, ny);
+            if (cp) pt = this.clampPoint(cp);
+          }
+        }
         d.points[handle === 1 ? 1 : 0] = pt;
         break;
       }

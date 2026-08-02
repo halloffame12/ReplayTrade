@@ -673,7 +673,7 @@ export function TradingChart({
       if (e.button !== 0) return;
       const [x, y] = getPos(e);
       panStartRef.current = [x, y];
-      engine.onPointerDown(x, y);
+      engine.onPointerDown(x, y, e.shiftKey);
       if (drawingActiveRef.current || engine.isDragging()) {
         if (!container.hasPointerCapture(e.pointerId)) {
           container.setPointerCapture(e.pointerId);
@@ -692,7 +692,7 @@ export function TradingChart({
         }
         if (dx * dx + dy * dy > 12) panStartRef.current = null;
       }
-      engine.onPointerMove(x, y);
+      engine.onPointerMove(x, y, e.shiftKey);
     };
     const onUp = (): void => {
       panStartRef.current = null;

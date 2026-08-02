@@ -29,11 +29,12 @@ import type { Candle, Timeframe } from '../types/market';
 import { TIME_FRAME_MS } from '../types/market';
 import type { ClosedTrade, Position } from '../types/trading';
 import type { MagnetMode, ToolId as DrawingTool } from '../drawing';
-import { DRAWING_COLORS, DrawingEngine, makeStorageKey } from '../drawing';
+import { DrawingEngine, makeStorageKey } from '../drawing';
 import { ema, sma } from '../utils/indicators';
 import { nearestIndexByTime, formatCandleDate } from '../utils/candleUtils';
 import { formatPrice, formatVolume } from '../utils/tradingCalculations';
 import { DrawingToolbar } from './chart/DrawingToolbar';
+import { DrawingSettingsPanel } from './chart/DrawingSettingsPanel';
 import { Tooltip } from './ui';
 import { ArrowRightToLine, ScanSearch } from 'lucide-react';
 
@@ -929,6 +930,10 @@ export function TradingChart({
     return { sma: indicatorArrays.sma[idx], ema: indicatorArrays.ema[idx] };
   }, [indicatorArrays, hovered, visible]);
 
+  const selectedDrawing = selectedDrawingId
+    ? (drawingEngineRef.current?.getDrawings().find((d) => d.id === selectedDrawingId) ?? null)
+    : null;
+
   return (
     <div className="relative h-full w-full min-h-0">
       <div ref={containerRef} className="h-full w-full" aria-label="Price chart" />
@@ -952,32 +957,39 @@ export function TradingChart({
           onDelete={() => drawingEngineRef.current?.deleteSelected()}
           onClear={() => drawingEngineRef.current?.clearAll()}
         />
-        {selectedDrawingId != null && (
-          <div
-            className="flex flex-col gap-1.5 rounded-md border border-bg-border bg-bg-panel/95 p-2 shadow-neo backdrop-blur-sm"
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            <span className="px-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-muted">Color</span>
-            <div className="grid grid-cols-4 gap-1">
-              {DRAWING_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  title={c}
-                  aria-label={`Set drawing color ${c}`}
-                  onClick={() => drawingEngineRef.current?.setColor(selectedDrawingId, c)}
-                  className="h-6 w-6 rounded-sm border border-black/30 transition-transform hover:scale-110"
-                  style={{
-                    backgroundColor: c,
-                    boxShadow:
-                      (drawingEngineRef.current?.getSelected()?.style.strokeColor ?? null) === c
-                        ? '0 0 0 2px rgba(255,255,255,0.85), 0 0 0 4px rgba(0,0,0,0.35)'
-                        : undefined,
-                  }}
-                />
-              ))}
-            </div>
-          </div>
+        {selectedDrawingId != null && selectedDrawing && (
+          <DrawingSettingsPanel
+            drawing={selectedDrawing}
+            decimals={decimals}
+            onUpdateStyle={(partial) => {
+              if (selectedDrawingId) {
+                drawingEngineRef.current?.updateStyle(selectedDrawingId, partial);
+              }
+            }}
+            onApplyPreset={(p) => {
+              if (selectedDrawingId) {
+                drawingEngineRef.current?.applyPreset(selectedDrawingId, p);
+              }
+            }}
+            onSetText={(text) => {
+              if (selectedDrawingId) {
+                drawingEngineRef.current?.setText(selectedDrawingId, text);
+              }
+            }}
+            onDuplicate={() => drawingEngineRef.current?.duplicateSelected()}
+            onDelete={() => drawingEngineRef.current?.deleteSelected()}
+            onLock={() => drawingEngineRef.current?.toggleLockSelected()}
+            onHide={() => drawingEngineRef.current?.toggleVisibilitySelected()}
+            onLayer={(dir) => {
+              const engine = drawingEngineRef.current;
+              if (!engine) return;
+              if (dir === 'front') engine.toFrontSelected();
+              else if (dir === 'back') engine.toBackSelected();
+              else if (dir === 'forward') engine.bringForwardSelected();
+              else if (dir === 'backward') engine.sendBackwardSelected();
+            }}
+            onClose={() => setSelectedDrawingId(null)}
+          />
         )}
       </div>
       {/* Back-to-latest: shown while scrolled away from the newest bar (TradingView parity). */}

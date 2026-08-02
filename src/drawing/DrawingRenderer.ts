@@ -159,6 +159,28 @@ export class DrawingRenderer {
     ctx.restore();
   }
 
+  renderHoverCrosshair(env: RenderEnv, x: number, y: number): void {
+    const ctx = env.ctx;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(79, 140, 255, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+
+    // Horizontal line
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(env.w, y);
+    ctx.stroke();
+
+    // Vertical line
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, env.h);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
   private isFutureLocked(d: Drawing, opts: RenderOptions): boolean {
     if (opts.revealTime === null) return false;
     if (d.type === 'horizontalLine') return false;

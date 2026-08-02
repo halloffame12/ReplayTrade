@@ -136,6 +136,8 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
 
   private lastW = 0;
   private lastH = 0;
+  private hoverX: number | null = null;
+  private hoverY: number | null = null;
   private panEnabled = true;
   private cursor = 'default';
   private storageKey: string;
@@ -703,14 +705,42 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
         this.interaction.shiftLocked = shiftKey;
       }
       this.applyDrag(x, y);
+      if (this.pendingSnap) {
+        this.hoverX = this.pendingSnap.x;
+        this.hoverY = this.pendingSnap.y;
+      } else {
+        this.hoverX = x;
+        this.hoverY = y;
+      }
       this.requestRender();
       return;
     }
     if (this.draft) {
       this.updateDraft(x, y, shiftKey);
+      if (this.pendingSnap) {
+        this.hoverX = this.pendingSnap.x;
+        this.hoverY = this.pendingSnap.y;
+      } else {
+        this.hoverX = x;
+        this.hoverY = y;
+      }
       this.requestRender();
       return;
     }
+    if (this.isDrawingToolActive()) {
+      this.snapAndClamp(x, y);
+      if (this.pendingSnap) {
+        this.hoverX = this.pendingSnap.x;
+        this.hoverY = this.pendingSnap.y;
+      } else {
+        this.hoverX = x;
+        this.hoverY = y;
+      }
+      this.requestRender();
+      return;
+    }
+    this.hoverX = null;
+    this.hoverY = null;
     if (this.tool === 'select') {
       const hit = this.hitTester.hit(x, y, this.lastW, this.lastH);
       const next = hit ? hit.id : null;
@@ -770,6 +800,14 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
     }
     if (this.draft) this.draft = null;
     this.finishPointer(true);
+  }
+
+  onPointerLeave(): void {
+    this.hoverX = null;
+    this.hoverY = null;
+    this.pendingSnap = null;
+    this.requestRender();
+    this.notify();
   }
 
   onDblClick(): void {
@@ -1289,6 +1327,9 @@ export class DrawingEngine implements ISeriesPrimitive<Time> {
         };
         this.renderer.renderDraft(env, draftDrawing, opts);
       }
+    }
+    if (this.isDrawingToolActive() && this.hoverX !== null && this.hoverY !== null) {
+      this.renderer.renderHoverCrosshair(env, this.hoverX, this.hoverY);
     }
     if (this.pendingSnap) {
       this.renderer.renderSnapIndicator(env, this.pendingSnap.x, this.pendingSnap.y, this.pendingSnap.target);

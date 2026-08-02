@@ -706,15 +706,21 @@ export function TradingChart({
       engine.onDblClick();
     };
 
+    const onLeave = (): void => {
+      engine.onPointerLeave();
+    };
+
     container.addEventListener('pointerdown', onDown);
     container.addEventListener('pointermove', onMove);
     container.addEventListener('dblclick', onDblClick);
+    container.addEventListener('pointerleave', onLeave);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
     return () => {
       container.removeEventListener('pointerdown', onDown);
       container.removeEventListener('pointermove', onMove);
       container.removeEventListener('dblclick', onDblClick);
+      container.removeEventListener('pointerleave', onLeave);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onCancel);
     };

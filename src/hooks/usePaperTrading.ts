@@ -119,12 +119,12 @@ export function usePaperTrading(symbol: string) {
   );
 
   const closePositionById = useCallback(
-    (id: string): ClosedTrade | null => {
+    (id: string, closedAt?: number): ClosedTrade | null => {
       const st = storeRef.current;
       const price = priceRef.current;
       const pos = st.positions.find((p) => p.id === id);
       if (!pos || price <= 0) return null;
-      const trade = closePosition(pos, price, 'manual', Math.floor(Date.now() / 1000));
+      const trade = closePosition(pos, price, 'manual', closedAt ?? Math.floor(Date.now() / 1000));
       applyClose(trade);
       return trade;
     },
@@ -132,7 +132,7 @@ export function usePaperTrading(symbol: string) {
   );
 
   const closeHalf = useCallback(
-    (id: string): ClosedTrade | null => {
+    (id: string, closedAt?: number): ClosedTrade | null => {
       const st = storeRef.current;
       const price = priceRef.current;
       const pos = st.positions.find((p) => p.id === id);
@@ -140,7 +140,7 @@ export function usePaperTrading(symbol: string) {
 
       const closeQty = pos.remaining / 2;
       const partial = { ...pos, remaining: closeQty };
-      const trade = closePosition(partial, price, 'manual', Math.floor(Date.now() / 1000));
+      const trade = closePosition(partial, price, 'manual', closedAt ?? Math.floor(Date.now() / 1000));
 
       const positions = st.positions.map((p) =>
         p.id === id ? { ...p, remaining: p.remaining - closeQty } : p,
@@ -153,12 +153,13 @@ export function usePaperTrading(symbol: string) {
   );
 
   const closeAllAtPrice = useCallback(
-    (price: number, reason: ClosedTrade['exitReason'] = 'replay-ended'): ClosedTrade[] => {
+    (price: number, reason: ClosedTrade['exitReason'] = 'replay-ended', closedAt?: number): ClosedTrade[] => {
       const st = storeRef.current;
       const trades: ClosedTrade[] = [];
       let balance = st.balance;
+      const exitTime = closedAt ?? Math.floor(Date.now() / 1000);
       for (const pos of st.positions) {
-        const t = closePosition(pos, price, reason, Math.floor(Date.now() / 1000));
+        const t = closePosition(pos, price, reason, exitTime);
         trades.push(t);
         balance += t.pnl;
       }

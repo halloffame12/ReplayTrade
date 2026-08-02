@@ -56,11 +56,16 @@ export function PositionsPanel({
                 >
                   {p.direction === 'long' ? 'LONG' : 'SHORT'}
                 </span>
+                {p.stopLoss === p.entryPrice && (
+                  <span className="rounded-sm bg-accent-dim px-1 py-px text-[9px] font-semibold text-accent">
+                    SL = Breakeven
+                  </span>
+                )}
                 {p.quantity !== p.remaining && (
                   <span className="text-[10px] text-text-muted">{p.remaining} left</span>
                 )}
               </div>
-              <div className={pnl >= 0 ? 'text-up' : 'text-down'}>
+              <div className={`rounded-sm px-1.5 py-0.5 text-right font-mono transition-all ${pnl >= 0 ? 'bg-up-dim text-up' : 'bg-down-dim text-down'}`}>
                 <span className="font-bold">{formatCurrency(pnl)}</span>{' '}
                 <span className="text-[10px]">({pnlPct >= 0 ? '+' : ''}
                   {pnlPct.toFixed(2)}%)</span>

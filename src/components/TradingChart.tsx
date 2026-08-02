@@ -28,12 +28,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Candle, Timeframe } from '../types/market';
 import { TIME_FRAME_MS } from '../types/market';
 import type { ClosedTrade, Position } from '../types/trading';
-import type { DrawingTool } from '../types/drawings';
-import { DrawingManager } from '../utils/drawingManager';
+import type { MagnetMode, ToolId as DrawingTool } from '../drawing';
+import { DRAWING_COLORS, DrawingEngine, makeStorageKey } from '../drawing';
 import { ema, sma } from '../utils/indicators';
 import { nearestIndexByTime, formatCandleDate } from '../utils/candleUtils';
 import { formatPrice, formatVolume } from '../utils/tradingCalculations';
-import { DrawingToolbar } from './DrawingToolbar';
+import { DrawingToolbar } from './chart/DrawingToolbar';
 import { Tooltip } from './ui';
 import { ArrowRightToLine, ScanSearch } from 'lucide-react';
 
@@ -168,9 +168,14 @@ export function TradingChart({
 
   const [hover, setHover] = useState<Candle | null>(null);
   const [tool, setTool] = useState<DrawingTool>('select');
+  const [magnetMode, setMagnetMode] = useState<MagnetMode>('weak');
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [drawingsCount, setDrawingsCount] = useState(0);
   const [, setDrawTick] = useState(0);
+  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [awayFromEdge, setAwayFromEdge] = useState(false);
-  const drawingManagerRef = useRef<DrawingManager | null>(null);
+  const drawingEngineRef = useRef<DrawingEngine | null>(null);
   const drawingActiveRef = useRef(false);
   drawingActiveRef.current = tool !== 'select';
 
@@ -279,12 +284,24 @@ export function TradingChart({
     candleSeriesRef.current = candleSeries;
     markersRef.current = createSeriesMarkers(candleSeries, []);
 
-    const drawingManager = new DrawingManager('');
-    drawingManagerRef.current = drawingManager;
-    candleSeries.attachPrimitive(drawingManager);
-    drawingManager.setOnChange(() => setDrawTick((v) => v + 1));
-    drawingManager.setOnCursor((cursor) => {
-      if (container.style.cursor !== cursor) container.style.cursor = cursor;
+    const drawingEngine = new DrawingEngine(makeStorageKey(symbol, timeframe));
+    drawingEngineRef.current = drawingEngine;
+    candleSeries.attachPrimitive(drawingEngine);
+    drawingEngine.setOptions({
+      onChange: () => {
+        setDrawTick((v) => v + 1);
+        setDrawingsCount(drawingEngine.getDrawings().length);
+      },
+      onCursor: (cursor) => {
+        if (container.style.cursor !== cursor) container.style.cursor = cursor;
+      },
+      onSelectionChange: (id) => {
+        setSelectedDrawingId(id);
+      },
+      onHistoryChange: (undoable, redoable) => {
+        setCanUndo(undoable);
+        setCanRedo(redoable);
+      },
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -375,7 +392,7 @@ export function TradingChart({
       ro.disconnect();
       chart.unsubscribeCrosshairMove(crosshairHandler);
       chart.unsubscribeClick(clickHandler);
-      drawingManagerRef.current = null;
+      drawingEngineRef.current = null;
       container.style.cursor = '';
       if (candleSeriesRef.current) {
         priceLineRefs.current.forEach((lines) =>
@@ -574,38 +591,78 @@ export function TradingChart({
 
   // Drawing context: per-symbol storage + reveal-window for coordinate math.
   useEffect(() => {
-    drawingManagerRef.current?.setContext(symbol, timeframe);
+    drawingEngineRef.current?.setContext(symbol, timeframe);
   }, [symbol, timeframe]);
 
   useEffect(() => {
-    const dm = drawingManagerRef.current;
-    if (!dm) return;
-    dm.setTimeframe(TIME_FRAME_MS[timeframe] / 1000);
-    dm.setDataTimes(candles.map((c) => c.time));
-    dm.setCandles(candles);
-    dm.setDecimals(decimals);
-  }, [candles, timeframe, decimals]);
+    const engine = drawingEngineRef.current;
+    if (!engine) return;
+    const tfSec = TIME_FRAME_MS[timeframe] / 1000;
+    const revealTime = replayActive ? (candles[currentReplayIndex]?.time ?? null) : null;
+    engine.setData(candles, tfSec, revealTime, replayActive);
+    engine.setDecimals(decimals);
+  }, [candles, timeframe, decimals, currentReplayIndex, replayActive]);
 
-  // Ctrl/Cmd+Z undoes the last drawing.
+  // Drawing shortcuts: Ctrl/Cmd+Z undo, Escape cancels an in-progress drawing,
+  // Delete/Backspace deletes the selection, Arrow keys nudge selected drawing.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+    const isTyping = (e: KeyboardEvent): boolean => {
       const target = e.target as HTMLElement;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+      return !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const engine = drawingEngineRef.current;
+      if (!engine) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        if (isTyping(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        engine.undo();
         return;
       }
-      e.preventDefault();
-      drawingManagerRef.current?.undo();
+      if (e.key === 'Escape' && engine.cancel()) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && engine.getSelectedId()) {
+        if (isTyping(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        engine.deleteSelected();
+        return;
+      }
+      if (engine.getSelectedId()) {
+        if (isTyping(e)) return;
+        const step = e.shiftKey ? 5 : 1;
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          engine.nudgeSelected(0, -step);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          e.stopPropagation();
+          engine.nudgeSelected(0, step);
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          e.stopPropagation();
+          engine.nudgeSelected(-step, 0);
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          engine.nudgeSelected(step, 0);
+        }
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
-  // Drawing interactions (click-drag to draw, drag to move, etc).
+  // Drawing interactions (click-drag to draw, drag to move, double-click to finish).
   useEffect(() => {
     const container = containerRef.current;
-    const dm = drawingManagerRef.current;
-    if (!container || !dm) return;
+    const engine = drawingEngineRef.current;
+    if (!container || !engine) return;
 
     const getPos = (e: PointerEvent): [number, number] => {
       const rect = container.getBoundingClientRect();
@@ -615,12 +672,8 @@ export function TradingChart({
       if (e.button !== 0) return;
       const [x, y] = getPos(e);
       panStartRef.current = [x, y];
-      dm.onPointerDown(x, y);
-      // Only capture the pointer once a drawing interaction actually starts
-      // (drawing tool active, or dragging an existing drawing). Capturing on
-      // every pointerdown would swallow lightweight-charts' own pan/zoom drag
-      // events and break scrolling the chart.
-      if (drawingActiveRef.current || dm.isDragging()) {
+      engine.onPointerDown(x, y);
+      if (drawingActiveRef.current || engine.isDragging()) {
         if (!container.hasPointerCapture(e.pointerId)) {
           container.setPointerCapture(e.pointerId);
         }
@@ -632,33 +685,35 @@ export function TradingChart({
       if (start) {
         const dx = x - start[0];
         const dy = y - start[1];
-        // A drag with a real vertical component while the select tool is
-        // active (and not dragging a drawing) is a price-scale pan/zoom.
-        // Treat it as a manual override so replay stops auto-refitting it.
-        if (Math.abs(dy) > 4 && !drawingActiveRef.current && !dm.isDragging()) {
+        if (Math.abs(dy) > 4 && !drawingActiveRef.current && !engine.isDragging()) {
           priceScaleManualRef.current = true;
           setPriceScaleManual(true);
         }
         if (dx * dx + dy * dy > 12) panStartRef.current = null;
       }
-      dm.onPointerMove(x, y);
+      engine.onPointerMove(x, y);
     };
     const onUp = (): void => {
       panStartRef.current = null;
-      dm.onPointerUp();
+      engine.onPointerUp();
     };
     const onCancel = (): void => {
       panStartRef.current = null;
-      dm.onPointerCancel();
+      engine.onPointerCancel();
+    };
+    const onDblClick = (): void => {
+      engine.onDblClick();
     };
 
     container.addEventListener('pointerdown', onDown);
     container.addEventListener('pointermove', onMove);
+    container.addEventListener('dblclick', onDblClick);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
     return () => {
       container.removeEventListener('pointerdown', onDown);
       container.removeEventListener('pointermove', onMove);
+      container.removeEventListener('dblclick', onDblClick);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onCancel);
     };
@@ -667,16 +722,19 @@ export function TradingChart({
 
   const handleToolChange = (next: DrawingTool): void => {
     setTool(next);
-    drawingManagerRef.current?.setTool(next);
+    drawingEngineRef.current?.setTool(next);
   };
 
-  // When entering replay-start selection, force the select tool back on — an
-  // active drawing tool would otherwise swallow chart clicks and make candle
-  // selection silently impossible.
+  const handleMagnetChange = (next: MagnetMode): void => {
+    setMagnetMode(next);
+    drawingEngineRef.current?.setMagnetMode(next);
+  };
+
+  // When entering replay-start selection, force the select tool back on
   useEffect(() => {
     if (!isSelecting) return;
     setTool('select');
-    drawingManagerRef.current?.setTool('select');
+    drawingEngineRef.current?.setTool('select');
   }, [isSelecting]);
 
   // While a drawing tool is active, take over touch gestures so drags draw
@@ -879,15 +937,48 @@ export function TradingChart({
           {candles.length === 0 ? 'No Data' : replayActive ? 'Replay' : symbol}
         </span>
       </div>
-      <div className="absolute bottom-2 left-1/2 z-20 -translate-x-1/2 max-w-[calc(100%-16px)]">
+      <div className="absolute bottom-2 left-1/2 z-20 flex max-w-[calc(100%-16px)] -translate-x-1/2 items-start gap-2 md:left-2 md:translate-x-0">
         <DrawingToolbar
           tool={tool}
           onToolChange={handleToolChange}
-          onDeleteSelected={() => drawingManagerRef.current?.deleteSelected()}
-          onClearAll={() => drawingManagerRef.current?.clearAll()}
-          hasSelection={drawingManagerRef.current?.getSelectedId() != null}
-          hasDrawings={drawingManagerRef.current?.hasDrawings() ?? false}
+          magnetMode={magnetMode}
+          onMagnetChange={handleMagnetChange}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          hasSelection={selectedDrawingId != null}
+          hasDrawings={drawingsCount > 0}
+          onUndo={() => drawingEngineRef.current?.undo()}
+          onRedo={() => drawingEngineRef.current?.redo()}
+          onDelete={() => drawingEngineRef.current?.deleteSelected()}
+          onClear={() => drawingEngineRef.current?.clearAll()}
         />
+        {selectedDrawingId != null && (
+          <div
+            className="flex flex-col gap-1.5 rounded-md border border-bg-border bg-bg-panel/95 p-2 shadow-neo backdrop-blur-sm"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <span className="px-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-muted">Color</span>
+            <div className="grid grid-cols-4 gap-1">
+              {DRAWING_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  title={c}
+                  aria-label={`Set drawing color ${c}`}
+                  onClick={() => drawingEngineRef.current?.setColor(selectedDrawingId, c)}
+                  className="h-6 w-6 rounded-sm border border-black/30 transition-transform hover:scale-110"
+                  style={{
+                    backgroundColor: c,
+                    boxShadow:
+                      (drawingEngineRef.current?.getSelected()?.style.strokeColor ?? null) === c
+                        ? '0 0 0 2px rgba(255,255,255,0.85), 0 0 0 4px rgba(0,0,0,0.35)'
+                        : undefined,
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {/* Back-to-latest: shown while scrolled away from the newest bar (TradingView parity). */}
       {awayFromEdge && visible.length > 0 && (

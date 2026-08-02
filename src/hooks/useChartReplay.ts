@@ -137,7 +137,9 @@ export function useChartReplay() {
         cur = next;
       }
       setState(cur);
-      timerRef.current = window.setTimeout(tick, intervalMs);
+      if (cur.isPlaying) {
+        timerRef.current = window.setTimeout(tick, intervalMs);
+      }
     };
     timerRef.current = window.setTimeout(tick, intervalMs);
     return () => {

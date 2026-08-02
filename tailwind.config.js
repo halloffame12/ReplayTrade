@@ -14,6 +14,7 @@ export default {
         accent: {
           DEFAULT: '#4f8cff',
           hover: '#3f76e0',
+          dim: 'rgba(79, 140, 255, 0.12)',
         },
         up: {
           DEFAULT: '#22c55e',

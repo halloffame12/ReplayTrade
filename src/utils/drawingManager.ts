@@ -13,7 +13,7 @@ import type {
 import type { Candle } from '../types/market';
 import type { Drawing, DrawingPoint, DrawingTool, TwoPointDrawing, TwoPointDrawingType } from '../types/drawings';
 
-const DRAWING_COLORS = [
+export const DRAWING_COLORS = [
   '#4f8cff',
   '#eab308',
   '#22c55e',
@@ -143,6 +143,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private tool: DrawingTool = 'select';
   private drawings: Drawing[] = [];
   private selectedId: string | null = null;
+  private hoveredId: string | null = null;
   private draft: DraftState | null = null;
   private drag: DragState | null = null;
   private colorIndex = 0;
@@ -206,8 +207,19 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (this.selectedId && !this.drawings.some((g) => g.id === this.selectedId)) {
       this.selectedId = null;
     }
+    this.hoveredId = null;
     this.requestRender();
     this.notify();
+  }
+
+  /** Cancel an in-progress drawing without committing it. */
+  cancelDraft(): boolean {
+    if (!this.draft) return false;
+    this.draft = null;
+    this.drag = null;
+    this.requestRender();
+    this.notify();
+    return true;
   }
 
   setContext(symbol: string, timeframe: string): void {
@@ -217,6 +229,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     this.storageKey = key;
     this.drawings = [];
     this.selectedId = null;
+    this.hoveredId = null;
     this.draft = null;
     this.drag = null;
     this.load();
@@ -236,6 +249,20 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return this.selectedId;
   }
 
+  /** Color of a drawing by id (used by the properties panel). */
+  getColor(id: string): string {
+    return this.drawings.find((g) => g.id === id)?.color ?? colorAt(this.colorIndex);
+  }
+
+  /** Recolor an existing drawing (TradingView-style properties panel). */
+  setColor(id: string, color: string): void {
+    const d = this.drawings.find((g) => g.id === id);
+    if (!d || d.color === color) return;
+    d.color = color;
+    this.requestRender();
+    this.notify();
+  }
+
   isToolActive(): boolean {
     return this.tool !== 'select';
   }
@@ -250,6 +277,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     this.draft = null;
     this.drag = null;
     this.selectedId = null;
+    this.hoveredId = null;
     this.applyInteractionOptions();
     this.setCursor(tool === 'select' ? 'default' : 'crosshair');
     this.requestRender();
@@ -264,6 +292,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (this.drawings.length === 0) return;
     this.drawings = [];
     this.selectedId = null;
+    this.hoveredId = null;
     this.draft = null;
     this.drag = null;
     this.requestRender();
@@ -272,6 +301,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   onPointerDown(x: number, y: number): void {
     if (!this.chart || !this.series) return;
+    this.hoveredId = null;
     switch (this.tool) {
       case 'select': {
         const hit = this.findHit(x, y);
@@ -338,15 +368,21 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       return;
     }
     if (this.tool === 'select') {
-      const hovered = this.findHit(x, y) !== null;
-      this.setPanEnabled(!hovered);
-      this.setCursor(hovered ? 'move' : 'default');
+      const hit = this.findHit(x, y);
+      const nextHovered = hit ? hit.id : null;
+      this.setPanEnabled(nextHovered === null);
+      this.setCursor(nextHovered !== null ? 'move' : 'default');
+      if (this.hoveredId !== nextHovered) {
+        this.hoveredId = nextHovered;
+        this.requestRender();
+      }
     }
   }
 
   onPointerUp(): void {
     if (this.draft) this.commitDraft();
     this.drag = null;
+    this.hoveredId = null;
     if (this.tool === 'select') this.setPanEnabled(true);
     this.requestRender();
     this.notify();
@@ -355,6 +391,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   onPointerCancel(): void {
     this.draft = null;
     this.drag = null;
+    this.hoveredId = null;
     if (this.tool === 'select') this.setPanEnabled(true);
     this.requestRender();
     this.notify();
@@ -363,7 +400,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   renderAll(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     if (this.drawings.length === 0 && !this.draft) return;
     for (const d of this.drawings) {
-      this.renderDrawing(ctx, d, w, h, false);
+      const isHovered = d.id === this.hoveredId && d.id !== this.selectedId;
+      this.renderDrawing(ctx, d, w, h, false, isHovered);
     }
     if (this.draft) {
       this.renderDraft(ctx, w, h);
@@ -373,9 +411,16 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     }
   }
 
-  renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, w: number, h: number, isDraft: boolean): void {
+  renderDrawing(
+    ctx: CanvasRenderingContext2D,
+    d: Drawing,
+    w: number,
+    h: number,
+    isDraft: boolean,
+    isHovered = false,
+  ): void {
     ctx.save();
-    ctx.lineWidth = isDraft ? 1 : 1.5;
+    ctx.lineWidth = isDraft ? 1 : isHovered ? 2.25 : 1.5;
     ctx.strokeStyle = d.color;
     ctx.setLineDash(isDraft ? [4, 4] : []);
     if (d.type === 'horzLine') {
@@ -711,9 +756,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       this.drawings.push({ id, type: 'horzLine', color: this.nextColor(), price: d.p1.price });
       this.selectedId = id;
     } else {
-      const dTime = d.p1.time - d.p0.time;
-      const dPrice = Math.abs(d.p1.price - d.p0.price);
-      if (Math.abs(dTime) < 1 && dPrice < Number.EPSILON) {
+      // Discard only a true click (no drag): both anchors landed on the same
+      // bar and the same (snapped) price. A horizontal trendline has a time
+      // delta but an identical price, so it must be kept.
+      const sameTime = Math.abs(d.p1.time - d.p0.time) < 1;
+      const samePrice = Math.abs(d.p1.price - d.p0.price) <= 1e-9 * Math.max(1, Math.abs(d.p0.price));
+      if (sameTime && samePrice) {
         this.selectedId = null;
         return;
       }
@@ -733,6 +781,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const i = this.drawings.findIndex((d) => d.id === id);
     if (i >= 0) this.drawings.splice(i, 1);
     if (this.selectedId === id) this.selectedId = null;
+    if (this.hoveredId === id) this.hoveredId = null;
     this.requestRender();
     this.notify();
   }
@@ -884,19 +933,26 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return lo;
   }
 
-  /** Magnet: snap a raw price to the nearby candle's high/low when close enough. */
+  /** Magnet: snap a raw price to the nearest candle's O/H/L/C when close enough. */
   private snapPrice(time: number, price: number): number {
     const i = this.nearestCandleIndex(time);
     if (i < 0) return price;
     const c = this.candles[i];
     if (!c) return price;
     const y = this.priceToY(price);
-    const yHigh = this.priceToY(c.high);
-    const yLow = this.priceToY(c.low);
-    if (y === null || yHigh === null || yLow === null) return price;
-    if (Math.abs(y - yHigh) <= SNAP_PX) return c.high;
-    if (Math.abs(y - yLow) <= SNAP_PX) return c.low;
-    return price;
+    if (y === null) return price;
+    let best: number | null = null;
+    let bestDist = Infinity;
+    for (const v of [c.open, c.high, c.low, c.close]) {
+      const vy = this.priceToY(v);
+      if (vy === null) continue;
+      const d = Math.abs(y - vy);
+      if (d <= SNAP_PX && d < bestDist) {
+        bestDist = d;
+        best = v;
+      }
+    }
+    return best ?? price;
   }
 
   private fmtPrice(p: number): string {

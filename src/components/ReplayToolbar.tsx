@@ -44,14 +44,22 @@ export function ReplayToolbar({
   const remaining = Math.max(0, total - state.currentReplayIndex - 1);
 
   const bar = (
-    <div className="flex flex-col gap-2 rounded-md border border-bg-border bg-bg-panel/95 p-2 shadow-neo backdrop-blur-sm">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-text-secondary">
-        <span className="flex items-center gap-1 rounded-sm border border-accent/60 bg-accent-dim px-1.5 py-0.5 font-semibold uppercase tracking-wider text-accent">
-          <Zap size={10} /> Replay Mode
+    <div className="relative flex flex-col gap-2 overflow-hidden rounded-md border border-bg-border bg-bg-panel/95 p-2 shadow-neo backdrop-blur-sm">
+      {/* Visual Replay Progress Bar */}
+      <div className="absolute inset-x-0 top-0 h-0.5 bg-bg-hover">
+        <div
+          className="h-full bg-accent transition-all duration-200"
+          style={{ width: `${Math.min(100, Math.max(0, revealedPct))}%` }}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-text-secondary pt-0.5">
+        <span className="flex items-center gap-1 rounded-sm border border-accent/60 bg-accent-dim px-1.5 py-0.5 font-semibold uppercase tracking-wider text-accent glow-accent">
+          <Zap size={10} className={state.isPlaying ? 'animate-pulse text-amber-400' : ''} /> Replay Mode
         </span>
         <span>
           Current:{' '}
-          <span className="text-text-primary">
+          <span className="text-text-primary font-semibold">
             {current ? formatCandleDate(current.time, timeframe) : '—'}
           </span>
         </span>
@@ -62,7 +70,7 @@ export function ReplayToolbar({
           </span>
         </span>
         <span>
-          Revealed: <span className="text-text-primary">{revealedPct.toFixed(1)}%</span>
+          Revealed: <span className="font-bold text-accent">{revealedPct.toFixed(1)}%</span>
         </span>
         <span>
           Remaining: <span className="text-text-primary">{remaining.toLocaleString()}</span>

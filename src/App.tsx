@@ -350,7 +350,9 @@ export default function App() {
       const candles = replay.state.candles;
       const price = candles[candles.length - 1]?.close ?? 0;
       if (price > 0) {
-        const trades = paper.closeAllAtPrice(price, 'replay-ended');
+        const lastCandle = candles[candles.length - 1];
+        const closedAt = lastCandle ? lastCandle.time : undefined;
+        const trades = paper.closeAllAtPrice(price, 'replay-ended', closedAt);
         trades.forEach((t) =>
           notify(
             `${t.symbol} ${t.direction === 'long' ? 'long' : 'short'} closed at replay end (${formatCurrency(
@@ -387,7 +389,9 @@ export default function App() {
 
   const handleClosePosition = useCallback(
     (id: string) => {
-      const t = paper.closePositionById(id);
+      const currentCandle = replay.state.candles[replay.state.currentReplayIndex];
+      const closedAt = currentCandle ? currentCandle.time : undefined;
+      const t = paper.closePositionById(id, closedAt);
       if (t) {
         notify(
           `Closed ${t.symbol} ${t.direction === 'long' ? 'long' : 'short'} @ ${formatPrice(
@@ -398,12 +402,14 @@ export default function App() {
         );
       }
     },
-    [paper.closePositionById, decimals, notify],
+    [paper.closePositionById, replay.state.candles, replay.state.currentReplayIndex, decimals, notify],
   );
 
   const handleCloseHalf = useCallback(
     (id: string) => {
-      const t = paper.closeHalf(id);
+      const currentCandle = replay.state.candles[replay.state.currentReplayIndex];
+      const closedAt = currentCandle ? currentCandle.time : undefined;
+      const t = paper.closeHalf(id, closedAt);
       if (t) {
         notify(
           `Closed 50% of ${t.symbol} @ ${formatPrice(t.exitPrice, decimals)} (${formatCurrency(t.pnl)})`,
@@ -411,7 +417,7 @@ export default function App() {
         );
       }
     },
-    [paper.closeHalf, decimals, notify],
+    [paper.closeHalf, replay.state.candles, replay.state.currentReplayIndex, decimals, notify],
   );
 
   // Keyboard shortcuts.
